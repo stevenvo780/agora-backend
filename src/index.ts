@@ -1,12 +1,14 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { chatStreamHandler } from './routes/chatStream.js';
+import { auditOnce } from '@/lib/env';
+import { mountNextStyleApiRoutes } from './routes/nextApiRouter.js';
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', true);
 
-const ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://agora.elenxos.com,http://localhost:3000')
+const ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://agora.elenxos.com,https://agora.humanizar.cloud,http://localhost:3000')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 app.use(cors({
@@ -15,20 +17,30 @@ app.use(cors({
     cb(new Error(`Origen no permitido: ${origin}`));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Worker-Token',
+    'X-Worker-Ts',
+    'X-Worker-Sig',
+    'X-Worker-Uid',
+    'X-Worker-Signature',
+    'X-Worker-Timestamp',
+    'X-Backend-Internal-Secret',
+    'X-Hub-Internal-Secret',
+    'X-Cron-Secret',
+    'X-Signature',
+    'X-Request-Id'
+  ]
 }));
-
-app.use(express.json({ limit: '4mb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'agora-backend', timestamp: new Date().toISOString() });
 });
 
-app.post('/agora-ai/stream', chatStreamHandler);
-
-// Compatibilidad con el path Vercel actual (rewrite simple).
-app.post('/api/agora-ai/stream', chatStreamHandler);
+auditOnce();
+await mountNextStyleApiRoutes(app);
 
 const PORT = Number(process.env.PORT || 8080);
 app.listen(PORT, () => {
