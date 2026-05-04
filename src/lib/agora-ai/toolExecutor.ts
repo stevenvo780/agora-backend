@@ -15,6 +15,9 @@ import { FORGEJO_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/git';
 import { SUBSCRIPTION_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/subscription';
 import { AGENT_CONTROL_TOOL_HANDLERS, getCachedToolResult, setCachedToolResult } from '@/lib/agora-ai/toolExecutors/agentControl';
 import { logAgentEvent } from '@/lib/agora-ai/logger';
+import { isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
+
+const isDestructiveToolName = (name: string) => isDestructiveAgentTool(name) || name.startsWith('delete_') || name === 'update_document' || name === 'write_worker_file' || name === 'overwrite_document';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -79,6 +82,22 @@ export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionC
 
     const handler = TOOL_HANDLERS[call.name];
     if (!handler) throw new Error(`Tool desconocida: ${call.name}`);
+
+    // DRY-RUN: tools destructivas devuelven simulación sin aplicar.
+    if (ctx.dryRun && isDestructiveToolName(call.name)) {
+      const result: AgentToolExecutionResult = {
+        ok: true,
+        name: call.name,
+        callId: call.id,
+        summary: `[DRY-RUN] ${call.name} no se ejecutó. Args: ${JSON.stringify(call.args).slice(0, 200)}`,
+        data: { dryRun: true, wouldHaveCalled: call.name, wouldHaveArgs: call.args }
+      };
+      logAgentEvent({ kind: 'tool.dry_run', tool: call.name, callId: call.id, uid: ctx.uid, workspaceId: ctx.workspaceId });
+      setCachedToolResult(call, ctx, result);
+      await writeAuditLog(ctx, call, result);
+      return result;
+    }
+
     const result = await handler(call, ctx);
     const durationMs = Date.now() - startedAt;
 

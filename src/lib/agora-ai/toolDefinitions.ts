@@ -1471,6 +1471,78 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
       required: ['key'],
       additionalProperties: false
     }
+  },
+  {
+    name: 'spawn_subagent',
+    description: 'Stub: en el futuro lanzará un subagente con context limitado. Hoy devuelve contrato y sugiere usar agent_plan_set como fallback.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string' },
+        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'] },
+        maxIterations: { type: 'number' }
+      },
+      required: ['task'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_set_hooks',
+    description: 'Configura hooks PreToolUse/PostToolUse/UserPromptSubmit en Firestore para que el agente los respete. Cada hook = string con instrucciones que el modelo ve antes/después de tool calls. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        preToolUse: { type: 'array', items: { type: 'string' } },
+        postToolUse: { type: 'array', items: { type: 'string' } },
+        userPromptSubmit: { type: 'array', items: { type: 'string' } },
+        confirmed: { type: 'boolean' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_list_hooks',
+    description: 'Lista los hooks configurados.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'agent_save_turn_snapshot',
+    description: 'Guarda un snapshot del turn actual (messages + toolCalls) en Firestore para replay futuro.',
+    parameters: {
+      type: 'object',
+      properties: {
+        turnId: { type: 'string' },
+        summary: { type: 'string' },
+        messages: { type: 'array' },
+        toolCalls: { type: 'array' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_replay_turn',
+    description: 'Devuelve un snapshot guardado previamente para que el modelo lo use como contexto y re-ejecute. Stub: no re-ejecuta automáticamente.',
+    parameters: {
+      type: 'object',
+      properties: { turnId: { type: 'string' } },
+      required: ['turnId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_list_turn_snapshots',
+    description: 'Lista los snapshots de turns guardados.',
+    parameters: { type: 'object', properties: { limit: { type: 'number' } }, additionalProperties: false }
+  },
+  {
+    name: 'agent_clear_turn_snapshot',
+    description: 'Elimina un snapshot.',
+    parameters: { type: 'object', properties: { turnId: { type: 'string' } }, required: ['turnId'], additionalProperties: false }
+  },
+  {
+    name: 'agent_dry_run_info',
+    description: 'Devuelve si el contexto actual está en modo dry-run (tools destructivas no aplican cambios reales).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
   }
 ];
 

@@ -9,9 +9,17 @@ interface BuildSystemPromptOptions {
   accessPolicy?: Partial<AgentAccessPolicy>;
   /** Instrucciones extra del usuario para este workspace. Se inyectan al final. */
   userInstructions?: string;
+  /** Hooks PreToolUse/PostToolUse/UserPromptSubmit configurados por el user. */
+  hooks?: {
+    preToolUse?: string[];
+    postToolUse?: string[];
+    userPromptSubmit?: string[];
+  };
+  /** Si true, el agente sabe que está en dry-run (tools destructivas no aplican). */
+  dryRun?: boolean;
 }
 
-export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, accessPolicy, userInstructions }: BuildSystemPromptOptions): string {
+export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, accessPolicy, userInstructions, hooks, dryRun }: BuildSystemPromptOptions): string {
   const base = [
     'Eres Agora AI, un asistente inteligente integrado en Agora, una plataforma educativa colaborativa con lógica formal.',
     'Responde en español con claridad y precisión.'
@@ -276,6 +284,25 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       '### Instrucciones del usuario para este workspace',
       'Estas instrucciones las definió el usuario para ESTE workspace específico. Síguelas además de las reglas anteriores cuando no entren en conflicto con la seguridad del sistema.',
       trimmedUserInstructions.slice(0, 4000)
+    );
+  }
+
+  if (hooks) {
+    const pre = (hooks.preToolUse || []).filter(Boolean).slice(0, 10);
+    const post = (hooks.postToolUse || []).filter(Boolean).slice(0, 10);
+    const submit = (hooks.userPromptSubmit || []).filter(Boolean).slice(0, 10);
+    if (pre.length || post.length || submit.length) {
+      base.push('### Hooks del usuario');
+      if (submit.length) base.push('UserPromptSubmit (aplicar al inicio de cada turno):\n- ' + submit.join('\n- '));
+      if (pre.length) base.push('PreToolUse (revisar antes de CADA tool call):\n- ' + pre.join('\n- '));
+      if (post.length) base.push('PostToolUse (revisar después de cada tool call):\n- ' + post.join('\n- '));
+    }
+  }
+
+  if (dryRun) {
+    base.push(
+      '### MODO DRY-RUN ACTIVO',
+      'Las tools destructivas (delete_*, update_document, write_worker_file, etc.) NO aplicarán cambios reales — devolverán `{ ok:true, dryRun:true, wouldHaveDone:... }`. Úsalo para mostrar al usuario qué pasaría sin riesgo. Ten cuidado de NO afirmar al usuario que ya hiciste el cambio: SIEMPRE acláralo como simulación.'
     );
   }
 

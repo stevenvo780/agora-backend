@@ -158,6 +158,121 @@ export function setCachedToolResult(call: AgentToolCall, ctx: AgentExecutionCont
   }
 }
 
+async function spawnSubagent(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const task = String(call.args.task || '').trim();
+  const scope = String(call.args.scope || 'read-only').trim();
+  const maxIterations = clamp(typeof call.args.maxIterations === 'number' ? call.args.maxIterations : 5, 1, 15);
+  if (!task) throw new Error('task es requerido');
+  if (!['read-only', 'workspace', 'full'].includes(scope)) throw new Error('scope debe ser read-only|workspace|full');
+  // Stub honesto: la spawn de subagentes reales requiere otra invocación al
+  // provider con un budget separado. Hoy devolvemos contrato + sugerencia.
+  return ok(call, `Subagent task "${task.slice(0, 60)}" (scope=${scope}, maxIter=${maxIterations}) pendiente — el provider del agente principal debe re-invocarse con un context limitado. Por ahora, ejecuta los pasos en línea con plan_set/plan_update.`, {
+    task, scope, maxIterations,
+    notImplementedFully: true,
+    suggestion: 'usa agent_plan_set + ejecutar pasos con tu propio loop; cuando se implemente real spawn, esta tool re-invocará al provider con context aislado.'
+  });
+}
+
+const hooksDocRef = (uid: string) => adminDb.collection('users').doc(uid).collection('agentHooks').doc('config');
+
+async function agentSetHooks(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const preToolUse = Array.isArray(call.args.preToolUse) ? call.args.preToolUse : [];
+  const postToolUse = Array.isArray(call.args.postToolUse) ? call.args.postToolUse : [];
+  const userPromptSubmit = Array.isArray(call.args.userPromptSubmit) ? call.args.userPromptSubmit : [];
+  const confirmed = call.args.confirmed === true;
+  if (!confirmed) {
+    return {
+      ok: false,
+      name: call.name,
+      callId: call.id,
+      summary: `¿Configurar hooks: ${preToolUse.length} preToolUse, ${postToolUse.length} postToolUse, ${userPromptSubmit.length} userPromptSubmit?`,
+      pendingConfirmation: {
+        toolCallId: call.id, toolName: call.name,
+        prompt: 'Configurar hooks de validación del agente',
+        args: { preToolUse, postToolUse, userPromptSubmit, confirmed: true }
+      }
+    } as AgentToolExecutionResult;
+  }
+  await hooksDocRef(ctx.uid).set({
+    preToolUse, postToolUse, userPromptSubmit,
+    updatedAt: FieldValue.serverTimestamp()
+  }, { merge: false });
+  return ok(call, `Hooks configurados: ${preToolUse.length} pre, ${postToolUse.length} post, ${userPromptSubmit.length} submit.`, {
+    preToolUse, postToolUse, userPromptSubmit
+  });
+}
+
+async function agentListHooks(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const snap = await hooksDocRef(ctx.uid).get();
+  if (!snap.exists) return ok(call, 'No hay hooks configurados.', { hooks: null });
+  const data = snap.data() as Record<string, unknown>;
+  return ok(call, 'Hooks configurados.', { hooks: data });
+}
+
+const turnSnapshotRef = (uid: string, turnId: string) => adminDb.collection('users').doc(uid).collection('agentTurnSnapshots').doc(turnId);
+
+async function agentSaveTurnSnapshot(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const turnId = String(call.args.turnId || `turn-${Date.now()}`).trim();
+  const summary = typeof call.args.summary === 'string' ? call.args.summary : '';
+  const messages = Array.isArray(call.args.messages) ? call.args.messages : [];
+  const toolCalls = Array.isArray(call.args.toolCalls) ? call.args.toolCalls : [];
+  await turnSnapshotRef(ctx.uid, turnId).set({
+    workspaceId: ctx.workspaceId,
+    summary: summary.slice(0, 500),
+    messages, toolCalls,
+    createdAt: FieldValue.serverTimestamp()
+  }, { merge: false });
+  return ok(call, `Turn snapshot guardado: ${turnId}.`, { turnId });
+}
+
+async function agentReplayTurn(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const turnId = String(call.args.turnId || '').trim();
+  if (!turnId) throw new Error('turnId es requerido');
+  const snap = await turnSnapshotRef(ctx.uid, turnId).get();
+  if (!snap.exists) throw new Error(`Turn snapshot ${turnId} no encontrado`);
+  const data = snap.data() as Record<string, unknown>;
+  return ok(call, `Turn ${turnId} cargado para replay. Re-ejecutar las tool calls registradas con su args original es responsabilidad del agente.`, {
+    turnId,
+    summary: data.summary,
+    messageCount: Array.isArray(data.messages) ? (data.messages as unknown[]).length : 0,
+    toolCallCount: Array.isArray(data.toolCalls) ? (data.toolCalls as unknown[]).length : 0,
+    snapshot: data,
+    notImplementedFully: true,
+    suggestion: 'el replay automático requeriría un sub-loop del provider; por ahora puedes pedirle al modelo "ejecuta de nuevo lo que hicimos en X" y leer este snapshot como contexto'
+  });
+}
+
+async function agentListTurnSnapshots(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 100);
+  const snap = await adminDb.collection('users').doc(ctx.uid).collection('agentTurnSnapshots')
+    .orderBy('createdAt', 'desc').limit(limit).get().catch(() => null);
+  if (!snap) return ok(call, 'No hay snapshots.', { snapshots: [] });
+  return ok(call, `${snap.size} snapshot(s) disponibles.`, {
+    snapshots: snap.docs.map(d => ({
+      turnId: d.id,
+      summary: (d.data() as { summary?: string }).summary ?? '',
+      createdAt: (d.data() as { createdAt?: unknown }).createdAt ?? null
+    }))
+  });
+}
+
+async function agentClearTurnSnapshot(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const turnId = String(call.args.turnId || '').trim();
+  if (!turnId) throw new Error('turnId es requerido');
+  await turnSnapshotRef(ctx.uid, turnId).delete().catch(() => undefined);
+  return ok(call, `Snapshot ${turnId} eliminado.`, { turnId });
+}
+
+async function agentDryRunInfo(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const dryRun = (ctx as unknown as Record<string, unknown>).dryRun === true;
+  return ok(call, dryRun
+    ? 'Modo dry-run ACTIVO: tools destructivas no aplican cambios reales.'
+    : 'Modo dry-run INACTIVO: las tools destructivas aplican cambios reales.', {
+    dryRun,
+    note: 'Para activar dry-run el cliente debe enviar dryRun:true en el body del stream/request.'
+  });
+}
+
 export const AGENT_CONTROL_TOOL_HANDLERS: Record<string, ToolHandler> = {
   agent_plan_set: agentPlanSet,
   agent_plan_update_step: agentPlanUpdateStep,
@@ -166,7 +281,13 @@ export const AGENT_CONTROL_TOOL_HANDLERS: Record<string, ToolHandler> = {
   agent_remember: agentRemember,
   agent_recall_memory: agentRecallMemory,
   agent_list_memories: agentListMemories,
-  agent_forget: agentForget
+  agent_forget: agentForget,
+  spawn_subagent: spawnSubagent,
+  agent_set_hooks: agentSetHooks,
+  agent_list_hooks: agentListHooks,
+  agent_save_turn_snapshot: agentSaveTurnSnapshot,
+  agent_replay_turn: agentReplayTurn,
+  agent_list_turn_snapshots: agentListTurnSnapshots,
+  agent_clear_turn_snapshot: agentClearTurnSnapshot,
+  agent_dry_run_info: agentDryRunInfo
 };
-
-void clamp;

@@ -46,6 +46,7 @@ export async function POST(request: NextRequest) {
     accessPolicy: rawAccessPolicy,
     userInstructions: rawUserInstructions
   } = body;
+  const dryRun = (body as unknown as { dryRun?: boolean }).dryRun === true;
   const userInstructions = typeof rawUserInstructions === 'string'
     ? rawUserInstructions.slice(0, 4000)
     : '';
@@ -138,6 +139,15 @@ export async function POST(request: NextRequest) {
           const contextPrompt = workspaceId && accessPolicy.capabilities.workspaceContext
             ? await buildAgoraWorkspaceContext(workspaceId)
             : '';
+
+          // Cargar hooks del user (PreToolUse/PostToolUse/UserPromptSubmit)
+          // y mezclarlos con el system prompt antes de iniciar el provider.
+          let userHooks: { preToolUse?: string[]; postToolUse?: string[]; userPromptSubmit?: string[] } | undefined;
+          try {
+            const { adminDb } = await import('@/lib/firebase-admin');
+            const hooksSnap = await adminDb.collection('users').doc(auth.uid).collection('agentHooks').doc('config').get();
+            if (hooksSnap.exists) userHooks = hooksSnap.data() as typeof userHooks;
+          } catch { /* hooks opcionales */ }
           const agentRun = await runProviderConversation({
             provider,
             apiKey,
@@ -153,7 +163,9 @@ export async function POST(request: NextRequest) {
               authToken: getTokenFromRequest(request) ?? undefined,
               accessPolicy,
               elapsedBudgetMs: () => Date.now() - startedAt,
-              maxBudgetMs: SOFT_BUDGET_MS
+              maxBudgetMs: SOFT_BUDGET_MS,
+              dryRun,
+              hooks: userHooks
             },
             callbacks: {
               onStatus: async (status) => send({ type: 'status', status }),

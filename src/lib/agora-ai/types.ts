@@ -236,4 +236,14 @@ export interface AgentExecutionContext {
   /** Presupuesto máximo en ms — el agente debe terminar antes para poder
    *  emitir un `complete` con `truncated: true`. */
   maxBudgetMs?: number;
+  /** Si true, las tools destructivas devuelven `{ ok:true, dryRun:true,
+   *  wouldHaveDone: ... }` sin tocar Firestore/MinIO/Forgejo. */
+  dryRun?: boolean;
+  /** Hooks PreToolUse/PostToolUse/UserPromptSubmit cargados al inicio del
+   *  turno. El orchestrator los inyecta como contexto adicional al modelo. */
+  hooks?: {
+    preToolUse?: string[];
+    postToolUse?: string[];
+    userPromptSubmit?: string[];
+  };
 }
