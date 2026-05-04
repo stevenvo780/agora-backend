@@ -172,7 +172,15 @@ const DOCUMENT_READ_TOOLS = new Set([
   'read_workspace_bundle',
   'summarize_document',
   'compare_documents',
-  'analyze_document'
+  'analyze_document',
+  'list_workspaces',
+  'get_document_content_at_revision',
+  'download_workspace_bundle',
+  'outline_document',
+  'find_broken_links',
+  'find_duplicates',
+  'fetch_url',
+  'read_agora_doc'
 ]);
 
 const DOCUMENT_WRITE_TOOLS = new Set([
@@ -183,12 +191,16 @@ const DOCUMENT_WRITE_TOOLS = new Set([
   'rename_file',
   'move_document',
   'create_folder',
-  'restore_document'
+  'rename_folder',
+  'restore_document',
+  'upload_external_url',
+  'apply_snippet_to_document'
 ]);
 
 const DOCUMENT_DELETE_TOOLS = new Set([
   'delete_document',
-  'delete_file'
+  'delete_file',
+  'delete_folder'
 ]);
 
 const SNIPPET_TOOLS = new Set([
@@ -209,6 +221,7 @@ const BOARD_TOOLS = new Set([
   'update_board_card',
   'move_board_card',
   'delete_board_card',
+  'bulk_create_board_cards',
   'restore_board_card',
   'restore_board_column',
   'extract_pending_tasks'
@@ -219,8 +232,10 @@ const SEMANTIC_TOOLS = new Set([
   'list_concepts',
   'define_concept',
   'create_relation',
+  'link_concepts',
   'list_glossary_entries',
-  'search_glossary_entries'
+  'search_glossary_entries',
+  'semantic_search_workspace'
 ]);
 
 const LOGIC_TOOLS = new Set([
@@ -230,7 +245,34 @@ const LOGIC_TOOLS = new Set([
   'validate_st_syntax',
   'run_st_program',
   'render_st_glossary',
-  'explain_formalization'
+  'explain_formalization',
+  'prove_step',
+  'compare_logic_profiles',
+  'formalize_document_section'
+]);
+
+const ADMIN_TOOLS = new Set([
+  'invite_member',
+  'remove_member',
+  'change_workspace_settings',
+  'transfer_workspace_ownership',
+  'list_members'
+]);
+
+const OBSERVABILITY_TOOLS = new Set([
+  'list_recent_actions',
+  'get_agent_audit_log',
+  'get_subscription_status',
+  'list_quota',
+  'get_workspace_quota_detail'
+]);
+
+const UI_EXTENDED_TOOLS = new Set([
+  'open_app_panel',
+  'focus_document_section',
+  'prompt_user_choice',
+  'show_diff_to_user',
+  'report_status_to_user'
 ]);
 
 export function getRequiredAgentCapability(call: AgentToolCall): AgentAccessCapability | null {
@@ -241,11 +283,32 @@ export function getRequiredAgentCapability(call: AgentToolCall): AgentAccessCapa
   if (BOARD_TOOLS.has(call.name)) return 'board';
   if (SEMANTIC_TOOLS.has(call.name)) return 'semantic';
   if (LOGIC_TOOLS.has(call.name)) return 'logic';
-  if (call.name === 'git_status' || call.name === 'git_log') return 'gitRead';
-  if (call.name === 'git_commit_workspace') return 'gitWrite';
-  if (call.name === 'get_worker_status' || call.name === 'list_worker_files' || call.name === 'sync_status') return 'workerRead';
-  if (call.name === 'run_worker_command') return 'workerCommand';
-  if (call.name === 'open_app_panel') return 'uiControl';
+  if (ADMIN_TOOLS.has(call.name)) return 'documentsWrite';
+  if (OBSERVABILITY_TOOLS.has(call.name)) return 'documentsRead';
+  if (UI_EXTENDED_TOOLS.has(call.name)) return 'uiControl';
+  if (call.name === 'git_status' || call.name === 'git_log' || call.name === 'git_diff') return 'gitRead';
+  if (
+    call.name === 'git_commit_workspace' ||
+    call.name === 'git_pull' ||
+    call.name === 'git_push_branch' ||
+    call.name === 'git_create_branch' ||
+    call.name === 'git_checkout' ||
+    call.name === 'git_revert_commit'
+  ) return 'gitWrite';
+  if (
+    call.name === 'get_worker_status' ||
+    call.name === 'list_worker_files' ||
+    call.name === 'sync_status' ||
+    call.name === 'read_worker_file' ||
+    call.name === 'tail_worker_logs'
+  ) return 'workerRead';
+  if (
+    call.name === 'run_worker_command' ||
+    call.name === 'write_worker_file' ||
+    call.name === 'kill_worker_process' ||
+    call.name === 'restart_worker' ||
+    call.name === 'start_worker'
+  ) return 'workerCommand';
   if (call.name === 'report_debug') return 'debug';
   return null;
 }
