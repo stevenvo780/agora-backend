@@ -43,8 +43,12 @@ export async function POST(request: NextRequest) {
     apiKey = '',
     model = '',
     mode = 'agent',
-    accessPolicy: rawAccessPolicy
+    accessPolicy: rawAccessPolicy,
+    userInstructions: rawUserInstructions
   } = body;
+  const userInstructions = typeof rawUserInstructions === 'string'
+    ? rawUserInstructions.slice(0, 4000)
+    : '';
 
   const effectiveMode: AgentMode = mode === 'chat' ? 'chat' : 'agent';
   const accessPolicy = normalizeAgentAccessPolicy(rawAccessPolicy);
@@ -154,7 +158,8 @@ export async function POST(request: NextRequest) {
             callbacks: {
               onStatus: async (status) => send({ type: 'status', status }),
               onStep: async (step) => send({ type: 'step', step })
-            }
+            },
+            userInstructions
           });
 
           clearTimeout(softTimeout);

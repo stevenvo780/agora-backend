@@ -34,8 +34,12 @@ export async function POST(request: NextRequest) {
       apiKey = '',
       model = '',
       mode = 'agent',
-      accessPolicy: rawAccessPolicy
+      accessPolicy: rawAccessPolicy,
+      userInstructions: rawUserInstructions
     } = body;
+    const userInstructions = typeof rawUserInstructions === 'string'
+      ? rawUserInstructions.slice(0, 4000)
+      : '';
     const effectiveMode: AgentMode = mode === 'chat' ? 'chat' : 'agent';
     const accessPolicy = normalizeAgentAccessPolicy(rawAccessPolicy);
 
@@ -98,7 +102,8 @@ export async function POST(request: NextRequest) {
           origin: request.nextUrl.origin,
           authToken: getTokenFromRequest(request) ?? undefined,
           accessPolicy
-        }
+        },
+        userInstructions
       });
 
       return NextResponse.json({ reply: agentRun.finalReply, agentRun });

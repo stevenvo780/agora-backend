@@ -7,9 +7,11 @@ interface BuildSystemPromptOptions {
   contextPrompt?: string;
   workspaceId?: string;
   accessPolicy?: Partial<AgentAccessPolicy>;
+  /** Instrucciones extra del usuario para este workspace. Se inyectan al final. */
+  userInstructions?: string;
 }
 
-export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, accessPolicy }: BuildSystemPromptOptions): string {
+export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, accessPolicy, userInstructions }: BuildSystemPromptOptions): string {
   const base = [
     'Eres Agora AI, un asistente inteligente integrado en Agora, una plataforma educativa colaborativa con lógica formal.',
     'Responde en español con claridad y precisión.'
@@ -125,6 +127,50 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       '`validate_st_syntax`: Valida sintaxis ST (parámetro `program`).',
       '`list_st_profiles`: Lista perfiles lógicos.',
       '`explain_formalization`: Formaliza y explica pedagógicamente.',
+      '',
+      '#### Cómo se escribe ST (cheatsheet para construir lógicas)',
+      'Sintaxis básica:',
+      '  • `logic <profile>` — selecciona perfil (p. ej. `logic classical.propositional`).',
+      '  • `axiom <name> : <formula>` — declara un axioma con nombre.',
+      '  • `derive <conclusion> from {<axiom1>, <axiom2>, ...}` — deriva la conclusión a partir de los axiomas.',
+      '  • `check valid <formula>` — chequea si la fórmula es válida (tautología) en el perfil.',
+      '  • `check sat <formula>` — chequea satisfacibilidad.',
+      '  • `assume <formula>` o `assume <name> : <formula>` — supone para reducción al absurdo o pruebas locales.',
+      '  • Conectivos ASCII: `&` (and), `|` (or), `!` (not), `->` (implica), `<->` (sii). Unicode aceptado: `∧ ∨ ¬ → ↔ ⊢`.',
+      '  • Cuantificadores (primer orden): `forall x. P(x)`, `exists x. P(x)`.',
+      '  • Modales (modal.K, deontic, epistemic): `[]p` o `□p` (necesario), `<>p` o `◇p` (posible), `[O]p` (obligatorio), `[K_a]p` (a sabe que p).',
+      '  • Notación de secuente: `<premisas> |- <conclusión>` para `check_logic`/`formalize_text`.',
+      '',
+      'Perfiles lógicos disponibles (usa `list_st_profiles` si necesitas detalle):',
+      '  • `classical.propositional` — proposicional clásica (P, Q, &, |, !, ->, <->).',
+      '  • `classical.firstorder` — lógica de primer orden con cuantificadores.',
+      '  • `modal.K`, `modal.T`, `modal.S4`, `modal.S5` — modal con [] / <>.',
+      '  • `deontic` — obligación/permiso (`[O]`, `[P]`).',
+      '  • `epistemic` — conocimiento de agentes (`[K_a]`).',
+      '  • `intuitionistic` — sin tercio excluso, requiere testigo constructivo.',
+      '  • `temporal.LTL` — lógica temporal lineal (G, F, X, U).',
+      '  • `belnap` — 4 valores (true, false, both, neither) para razonar con inconsistencia.',
+      '  • `syllogistic` — silogismos aristotélicos.',
+      '  • `probabilistic` — bayesiano básico.',
+      '  • `arithmetic` — aritmética de Peano básica.',
+      '',
+      'Patrón típico para construir y validar una lógica desde cero:',
+      '  1. `logic <profile>`',
+      '  2. Declara axiomas con nombre: `axiom a1 : P -> Q`, `axiom a2 : P`.',
+      '  3. Deriva: `derive Q from {a1, a2}`. Si la derivación falla, `status: unknown` indica que no se encontró prueba (no necesariamente inválido).',
+      '  4. Para validez sin axiomas: `check valid (P | !P)`.',
+      '  5. Para contramodelos: si `check valid` da `provable: false`, mira el contramodelo en el resultado.',
+      '',
+      'Ejemplo completo modus ponens:',
+      '  ```',
+      '  logic classical.propositional',
+      '  axiom a1 : P -> Q',
+      '  axiom a2 : P',
+      '  derive Q from {a1, a2}',
+      '  ```',
+      '',
+      'Para fórmulas en español natural usa `formalize_text` PRIMERO y verifica el resultado antes de pasar al runtime.',
+      'Cuando expliques al usuario una lógica formalizada, comenta qué perfil elegiste, cómo se traducen las fórmulas y si la derivación es válida o tentativa.',
       ''
     );
 
@@ -146,6 +192,11 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       `\`open_app_panel\`: abre paneles de UI como ${AGENT_UI_PANEL_DESCRIPTION}.`,
       '`report_debug`: publica mensajes en el bus de Problemas cuando detectes fallos, warnings o pasos de diagnóstico importantes.',
       'Si una tool falla o un comando devuelve exitCode distinto de 0, explica el problema y usa `report_debug` si necesitas que quede visible en Problemas.',
+      '',
+      '### Web e información externa',
+      '`fetch_url`: descarga el contenido textual de una URL pública (http/https). Útil para consultar documentación externa, APIs, MDN, papers, sitios públicos. Bloquea localhost/IPs privadas. Devuelve hasta 200 KB. Read-only — no requiere confirmación.',
+      '`read_agora_doc`: lee la documentación oficial de Agora alojada en agora.elenxos.com/docs (incluye los 11 perfiles ST con ejemplos). Sin slug devuelve los disponibles. Read-only.',
+      'Cuando el usuario pregunte por algo que no esté en el workspace pero sea verificable en la web (sintaxis de un lenguaje, RFC, papers, librerías), prefiere `fetch_url` antes de inventar. Si pregunta por la sintaxis ST detallada, usa `read_agora_doc` con el slug correspondiente.',
       ''
     );
 
@@ -173,6 +224,15 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
 
   if (contextPrompt) {
     base.push(contextPrompt);
+  }
+
+  const trimmedUserInstructions = (userInstructions || '').trim();
+  if (trimmedUserInstructions) {
+    base.push(
+      '### Instrucciones del usuario para este workspace',
+      'Estas instrucciones las definió el usuario para ESTE workspace específico. Síguelas además de las reglas anteriores cuando no entren en conflicto con la seguridad del sistema.',
+      trimmedUserInstructions.slice(0, 4000)
+    );
   }
 
   return base.join('\n\n');

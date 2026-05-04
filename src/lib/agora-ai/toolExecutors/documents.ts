@@ -15,6 +15,48 @@ import { EMPTY_SEMANTIC_WORKSPACE_STATE } from '@/lib/semantic/workspace-state';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
+/**
+ * Reúne todos los paths de carpeta del workspace, INCLUYENDO carpetas vacías
+ * registradas como documentos type=folder. La carpeta vacía vive en Firestore
+ * como un doc con type='folder', folder=<parentPath>, name=<folderName>;
+ * su path real es `<folder>/<name>`.
+ */
+function collectWorkspaceFolders(documents: StoredDocument[]): {
+  folders: string[];
+  emptyFolders: string[];
+  folderDocCountMap: Record<string, number>;
+} {
+  const allFolders = new Set<string>();
+  const folderDocCount: Record<string, number> = {};
+
+  for (const doc of documents) {
+    const isFolder = doc.type === DocumentType.Folder;
+    if (isFolder) {
+      const parent = typeof doc.folder === 'string' ? doc.folder : '';
+      const name = typeof doc.name === 'string' ? doc.name : '';
+      if (name) {
+        const folderPath = normalizeFolderPath(parent ? `${parent}/${name}` : name);
+        allFolders.add(folderPath);
+      }
+    } else {
+      const folderPath = normalizeFolderPath(doc.folder);
+      allFolders.add(folderPath);
+      folderDocCount[folderPath] = (folderDocCount[folderPath] ?? 0) + 1;
+    }
+  }
+
+  const emptyFolders: string[] = [];
+  for (const folder of allFolders) {
+    if ((folderDocCount[folder] ?? 0) === 0) emptyFolders.push(folder);
+  }
+
+  return {
+    folders: Array.from(allFolders).sort(),
+    emptyFolders: emptyFolders.sort(),
+    folderDocCountMap: folderDocCount
+  };
+}
+
 async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) {
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 40, 5, 100);
   const includeWorker = call.args.includeWorker === true;
@@ -27,11 +69,7 @@ async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext)
     includeWorker ? fetchWorkerStatus(ctx, 3000) : Promise.resolve(null)
   ]);
 
-  const folders = new Set<string>();
-  documents.forEach((doc: StoredDocument) => {
-    folders.add(normalizeFolderPath(doc.folder));
-    if (doc.type === DocumentType.Folder && doc.name) folders.add(normalizeFolderPath(doc.name));
-  });
+  const { folders, emptyFolders, folderDocCountMap } = collectWorkspaceFolders(documents);
 
   const textDocs = documents.filter((doc: StoredDocument) => (doc.type || DocumentType.Text) !== DocumentType.Folder);
   const folderDocs = documents.filter((doc: StoredDocument) => doc.type === DocumentType.Folder);
@@ -41,7 +79,7 @@ async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext)
     .slice(0, limit)
     .map(summarizeDocumentMeta);
 
-  return ok(call, `Inventarié el workspace: ${documents.length} documento(s), ${folders.size} carpeta(s), ${snippets.length} snippet(s), ${semantic.concepts.length} concepto(s).`, {
+  return ok(call, `Inventarié el workspace: ${documents.length} documento(s), ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'}), ${snippets.length} snippet(s), ${semantic.concepts.length} concepto(s).`, {
     workspace: {
       id: String(workspace.id),
       name: String(workspace.name || 'Workspace'),
@@ -52,7 +90,9 @@ async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext)
       documentCount: documents.length,
       textDocumentCount: textDocs.length,
       folderDocumentCount: folderDocs.length,
-      folders: Array.from(folders).sort().slice(0, limit),
+      folders: folders.slice(0, limit),
+      emptyFolders: emptyFolders.slice(0, limit),
+      folderDocCountMap,
       recentDocuments,
       snippets: snippets.slice(0, limit).map((snippet: StoredSnippet) => ({
         id: snippet.id,
@@ -561,25 +601,14 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
 
 async function listFolders(call: AgentToolCall, ctx: AgentExecutionContext) {
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
-  let query: FirebaseFirestore.Query = adminDb.collection('documents');
-  if (isPersonalWorkspaceId(ctx.workspaceId)) {
-    query = query.where('ownerId', '==', ctx.uid);
-    query = query.where('workspaceId', '==', PERSONAL_WORKSPACE_ID);
-  } else {
-    query = query.where('workspaceId', '==', ctx.workspaceId);
-  }
+  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const { folders, emptyFolders, folderDocCountMap } = collectWorkspaceFolders(documents);
 
-  const snap = await query.limit(MAX_DOC_SCAN).get();
-  const folders = new Set<string>();
-  snap.docs.forEach(doc => {
-    const data = doc.data() as Record<string, unknown>;
-    folders.add(normalizeFolderPath(typeof data.folder === 'string' ? data.folder : undefined));
-    if (data.type === DocumentType.Folder && typeof data.name === 'string') {
-      folders.add(normalizeFolderPath(data.name));
-    }
-  });
-
-  return ok(call, `Encontré ${folders.size} carpeta(s).`, { folders: Array.from(folders).sort() });
+  return ok(
+    call,
+    `Encontré ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'}).`,
+    { folders, emptyFolders, folderDocCountMap }
+  );
 }
 
 async function getWorkspaceInfo(call: AgentToolCall, ctx: AgentExecutionContext) {

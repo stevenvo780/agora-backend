@@ -89,6 +89,7 @@ interface ProviderRunOptions {
   mode: AgentMode;
   executionContext: AgentExecutionContext;
   callbacks?: ProviderRunCallbacks;
+  userInstructions?: string;
 }
 
 type OpenAIToolCall = {
@@ -426,7 +427,8 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     mode: options.mode,
     contextPrompt: options.contextPrompt,
     workspaceId: options.executionContext.workspaceId,
-    accessPolicy: options.executionContext.accessPolicy
+    accessPolicy: options.executionContext.accessPolicy,
+    userInstructions: options.userInstructions
   });
 
   const inputMessages = await compactInputMessages(options, emitStatus);
@@ -603,7 +605,8 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
     mode: options.mode,
     contextPrompt: options.contextPrompt,
     workspaceId: options.executionContext.workspaceId,
-    accessPolicy: options.executionContext.accessPolicy
+    accessPolicy: options.executionContext.accessPolicy,
+    userInstructions: options.userInstructions
   });
 
   const useNativeThinking = supportsNativeThinking(options.model) && options.mode === 'agent';
@@ -790,7 +793,8 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
     mode: options.mode,
     contextPrompt: options.contextPrompt,
     workspaceId: options.executionContext.workspaceId,
-    accessPolicy: options.executionContext.accessPolicy
+    accessPolicy: options.executionContext.accessPolicy,
+    userInstructions: options.userInstructions
   });
 
   const inputMessages = await compactInputMessages(options, emitStatus);

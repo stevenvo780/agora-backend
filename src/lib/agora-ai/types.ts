@@ -213,6 +213,7 @@ export interface AgentRequestBody {
   model?: string;
   mode?: AgentMode;
   accessPolicy?: Partial<AgentAccessPolicy>;
+  userInstructions?: string;
 }
 
 export interface AgentResponseBody {

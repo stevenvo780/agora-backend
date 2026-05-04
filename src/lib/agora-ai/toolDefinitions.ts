@@ -706,6 +706,32 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
       required: ['documentId'],
       additionalProperties: false
     }
+  },
+  {
+    name: 'fetch_url',
+    description: 'Descarga el contenido textual de una URL pública (http/https). Útil para consultar documentación externa, APIs públicas o recursos web. Bloquea localhost/IPs privadas. Devuelve {status, contentType, bodyText (truncado), bytesRead, truncated}. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL absoluta http(s)://... a descargar.' },
+        maxBytes: { type: 'number', description: 'Bytes máximos a leer (1024..200000, default 50000).' },
+        timeoutMs: { type: 'number', description: 'Timeout en ms (1000..30000, default 8000).' }
+      },
+      required: ['url'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'read_agora_doc',
+    description: 'Lee la documentación oficial de Agora alojada en agora.elenxos.com/docs. Sin slug devuelve los slugs disponibles (ej. "st", "st/proposicional", "st/modal-k"). Con slug devuelve el contenido textual de esa doc. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'Slug de la doc (ej. "st", "st/proposicional"). Vacío = lista los disponibles.' },
+        maxBytes: { type: 'number', description: 'Bytes máximos a leer (default 80000).' }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -791,7 +817,10 @@ const OLLAMA_CORE_TOOL_NAMES = new Set([
   'define_concept',
   // Doc intelligence
   'summarize_document',
-  'get_workspace_info'
+  'get_workspace_info',
+  // External / docs
+  'fetch_url',
+  'read_agora_doc'
 ]);
 
 // Ollama uses OpenAI-compatible format but with a reduced tool set
