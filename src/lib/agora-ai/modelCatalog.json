@@ -1,40 +1,59 @@
 {
   "$schema": "./modelCatalog.schema.json",
   "lastUpdated": "2026-05-04",
-  "_help": "Fuente de verdad de modelos disponibles y sus ventanas de contexto. Editar a mano cuando salgan modelos nuevos. El endpoint /api/agora-ai/models?refresh=1 puede mergear con datos en vivo de Anthropic y Gemini (los únicos providers que exponen contextWindow vía API). Para los demás (OpenAI, DeepSeek, xAI), este JSON es la única fuente.",
+  "_help": "Fuente de verdad de modelos disponibles y sus ventanas de contexto. Editar a mano cuando salgan modelos nuevos. Anthropic y Gemini pueden exponer parte de estos datos vía API; OpenAI, DeepSeek y xAI deben validarse contra docs oficiales o test call.",
   "_verifiedLegend": {
     "official": "leído de docs oficiales del provider en lastUpdated",
     "community": "citado por fuentes terceras confiables, no validado contra API",
-    "unverified": "incierto, requiere confirmación con un test call"
+    "unverified": "incierto, requiere confirmación con un test call",
+    "deprecated": "alias o modelo vigente solo por compatibilidad; evitar para integraciones nuevas"
   },
   "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "family": "deepseek",
+      "label": "DeepSeek V4 Flash",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "verified": "official",
+      "notes": "Modelo actual económico. Soporta thinking y non-thinking. Precio oficial: input cache miss $0.14/MTok, cache hit $0.0028/MTok, output $0.28/MTok."
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "family": "deepseek",
+      "label": "DeepSeek V4 Pro",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "verified": "official",
+      "notes": "Modelo actual fuerte. Soporta thinking y non-thinking. Precio con descuento hasta 2026-05-31: input cache miss $0.435/MTok, cache hit $0.003625/MTok, output $0.87/MTok; precio base output $3.48/MTok."
+    },
     {
       "id": "deepseek-chat",
       "family": "deepseek",
       "label": "DeepSeek Chat",
-      "contextWindow": 128000,
-      "maxOutputTokens": 8192,
-      "verified": "official",
-      "notes": "V3.2-Exp non-thinking. Si tu cuenta DeepSeek anuncia 1M, sube contextWindow a 1000000."
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "verified": "deprecated",
+      "notes": "Alias temporal de compatibilidad: actualmente enruta a deepseek-v4-flash non-thinking. Se retirará el 2026-07-24 15:59 UTC."
     },
     {
       "id": "deepseek-reasoner",
       "family": "deepseek",
       "label": "DeepSeek Reasoner",
-      "contextWindow": 128000,
-      "maxOutputTokens": 32768,
-      "verified": "official",
-      "notes": "R1 thinking. Misma observación que deepseek-chat para 1M."
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "verified": "deprecated",
+      "notes": "Alias temporal de compatibilidad: actualmente enruta a deepseek-v4-flash thinking. Se retirará el 2026-07-24 15:59 UTC."
     },
 
     {
       "id": "claude-opus-4-7",
       "family": "anthropic",
-      "label": "Claude Opus 4.7 (1M)",
+      "label": "Claude Opus 4.7",
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
       "verified": "official",
-      "notes": "1M nativo sin beta header. Adaptive thinking."
+      "notes": "1M context. Adaptive thinking. En Message Batches puede llegar a 300K output con beta header."
     },
     {
       "id": "claude-opus-4-6",
@@ -43,16 +62,16 @@
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
       "verified": "official",
-      "notes": "1M GA sin beta header."
+      "notes": "1M context GA. Adaptive thinking. En Message Batches puede llegar a 300K output con beta header."
     },
     {
       "id": "claude-sonnet-4-6",
       "family": "anthropic",
-      "label": "Claude Sonnet 4.6 (1M)",
+      "label": "Claude Sonnet 4.6",
       "contextWindow": 1000000,
       "maxOutputTokens": 64000,
       "verified": "official",
-      "notes": "1M GA sin beta header. Extended y adaptive thinking."
+      "notes": "1M context. Max output síncrono 64K; en Message Batches puede llegar a 300K output con beta header."
     },
     {
       "id": "claude-sonnet-4-5-20250929",
@@ -61,7 +80,7 @@
       "contextWindow": 200000,
       "maxOutputTokens": 64000,
       "verified": "official",
-      "notes": "Beta header context-1m-2025-08-07 retirado."
+      "notes": "Modelo anterior. Contexto normal 200K; usar Sonnet 4.6 si se necesita 1M."
     },
     {
       "id": "claude-haiku-4-5",
@@ -71,29 +90,64 @@
       "maxOutputTokens": 64000,
       "verified": "official"
     },
-    {
-      "id": "claude-haiku-4-5-20251001",
-      "family": "anthropic",
-      "label": "Claude Haiku 4.5 (snapshot)",
-      "contextWindow": 200000,
-      "maxOutputTokens": 64000,
-      "verified": "official"
-    },
 
     {
-      "id": "gpt-4o",
+      "id": "gpt-5.5",
       "family": "openai",
-      "label": "GPT-4o",
-      "contextWindow": 128000,
-      "maxOutputTokens": 16384,
+      "label": "GPT-5.5",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "verified": "official",
+      "notes": "Modelo frontier actual. Recargo para prompts >272K input tokens."
+    },
+    {
+      "id": "gpt-5.4",
+      "family": "openai",
+      "label": "GPT-5.4",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "verified": "official",
+      "notes": "Recargo 2x input/1.5x output cuando prompt >272K input tokens."
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "family": "openai",
+      "label": "GPT-5.4 mini",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
       "verified": "official"
     },
     {
-      "id": "gpt-4o-mini",
+      "id": "gpt-5.4-nano",
       "family": "openai",
-      "label": "GPT-4o mini",
-      "contextWindow": 128000,
-      "maxOutputTokens": 16384,
+      "label": "GPT-5.4 nano",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "verified": "official"
+    },
+    {
+      "id": "gpt-5",
+      "family": "openai",
+      "label": "GPT-5",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "verified": "official",
+      "notes": "Modelo anterior frente a GPT-5.4/5.5."
+    },
+    {
+      "id": "gpt-5-mini",
+      "family": "openai",
+      "label": "GPT-5 mini",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
+      "verified": "official"
+    },
+    {
+      "id": "gpt-5-nano",
+      "family": "openai",
+      "label": "GPT-5 nano",
+      "contextWindow": 400000,
+      "maxOutputTokens": 128000,
       "verified": "official"
     },
     {
@@ -121,12 +175,29 @@
       "verified": "official"
     },
     {
+      "id": "gpt-4o",
+      "family": "openai",
+      "label": "GPT-4o",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "verified": "official"
+    },
+    {
+      "id": "gpt-4o-mini",
+      "family": "openai",
+      "label": "GPT-4o mini",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "verified": "official"
+    },
+    {
       "id": "o3",
       "family": "openai",
-      "label": "o3 (reasoning)",
+      "label": "o3",
       "contextWindow": 200000,
       "maxOutputTokens": 100000,
-      "verified": "official"
+      "verified": "official",
+      "notes": "Modelo reasoning anterior; sucedido por GPT-5."
     },
     {
       "id": "o3-mini",
@@ -144,47 +215,40 @@
       "maxOutputTokens": 100000,
       "verified": "official"
     },
-    {
-      "id": "gpt-5",
-      "family": "openai",
-      "label": "GPT-5",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "verified": "unverified",
-      "notes": "Datos citados por fuentes terceras. Validar con test call antes de confiar."
-    },
-    {
-      "id": "gpt-5-mini",
-      "family": "openai",
-      "label": "GPT-5 mini",
-      "contextWindow": 400000,
-      "maxOutputTokens": 128000,
-      "verified": "unverified"
-    },
-    {
-      "id": "gpt-5.4",
-      "family": "openai",
-      "label": "GPT-5.4",
-      "contextWindow": 1050000,
-      "maxOutputTokens": 128000,
-      "verified": "unverified",
-      "notes": "Recargo 2x input/1.5x output cuando prompt > 272K tokens."
-    },
-    {
-      "id": "gpt-5.5",
-      "family": "openai",
-      "label": "GPT-5.5",
-      "contextWindow": 1050000,
-      "maxOutputTokens": 128000,
-      "verified": "unverified"
-    },
 
+    {
+      "id": "gemini-3.1-pro-preview",
+      "family": "google",
+      "label": "Gemini 3.1 Pro Preview",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "verified": "official",
+      "notes": "Preview. Usar con cuidado en producción."
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "family": "google",
+      "label": "Gemini 3 Flash Preview",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "verified": "official",
+      "notes": "Preview. Tiene Computer Use."
+    },
+    {
+      "id": "gemini-3.1-flash-lite-preview",
+      "family": "google",
+      "label": "Gemini 3.1 Flash-Lite Preview",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "verified": "official",
+      "notes": "Preview económico."
+    },
     {
       "id": "gemini-2.5-pro",
       "family": "google",
       "label": "Gemini 2.5 Pro",
       "contextWindow": 1048576,
-      "maxOutputTokens": 65535,
+      "maxOutputTokens": 65536,
       "verified": "official"
     },
     {
@@ -192,7 +256,7 @@
       "family": "google",
       "label": "Gemini 2.5 Flash",
       "contextWindow": 1048576,
-      "maxOutputTokens": 65535,
+      "maxOutputTokens": 65536,
       "verified": "official"
     },
     {
@@ -200,7 +264,7 @@
       "family": "google",
       "label": "Gemini 2.5 Flash Lite",
       "contextWindow": 1048576,
-      "maxOutputTokens": 65535,
+      "maxOutputTokens": 65536,
       "verified": "official"
     },
     {
@@ -209,26 +273,54 @@
       "label": "Gemini 2.0 Flash",
       "contextWindow": 1048576,
       "maxOutputTokens": 8192,
-      "verified": "official",
-      "notes": "Deprecated."
+      "verified": "deprecated",
+      "notes": "Deprecated. Migrar a Gemini 2.5 Flash o Gemini 3.x."
     },
 
+    {
+      "id": "grok-4.3",
+      "family": "xai",
+      "label": "Grok 4.3",
+      "contextWindow": 1000000,
+      "maxOutputTokens": null,
+      "verified": "official",
+      "notes": "Modelo recomendado actualmente por xAI para Chat API. La página pública de xAI lista 1M de contexto, pero no expone claramente max output en docs parseables."
+    },
+    {
+      "id": "grok-4.20-reasoning",
+      "family": "xai",
+      "label": "Grok 4.20 Reasoning",
+      "contextWindow": 2000000,
+      "maxOutputTokens": null,
+      "verified": "official",
+      "notes": "xAI lista 2M de contexto. La doc pública no deja claro max output."
+    },
+    {
+      "id": "grok-4.20-non-reasoning",
+      "family": "xai",
+      "label": "Grok 4.20 Non-Reasoning",
+      "contextWindow": 2000000,
+      "maxOutputTokens": null,
+      "verified": "official",
+      "notes": "xAI lista 2M de contexto. Variante para baja latencia."
+    },
     {
       "id": "grok-4",
       "family": "xai",
       "label": "Grok 4",
       "contextWindow": 256000,
-      "maxOutputTokens": 16000,
+      "maxOutputTokens": 256000,
       "verified": "community",
-      "notes": "256K total; > 128K aplica recargo según xAI."
+      "notes": "Modelo anterior. Usar grok-4.3 o grok-4.20 si están disponibles en tu cuenta."
     },
     {
       "id": "grok-4-fast",
       "family": "xai",
       "label": "Grok 4 Fast",
       "contextWindow": 2000000,
-      "maxOutputTokens": 16000,
-      "verified": "community"
+      "maxOutputTokens": null,
+      "verified": "community",
+      "notes": "Modelo anterior/alias según proveedor. xAI ahora empuja grok-4.3 y grok-4.20."
     },
     {
       "id": "grok-3",
@@ -236,34 +328,36 @@
       "label": "Grok 3",
       "contextWindow": 131072,
       "maxOutputTokens": 16000,
-      "verified": "community"
+      "verified": "community",
+      "notes": "Legacy; mantener solo si necesitas compatibilidad."
     },
 
     {
       "id": "qwen3:8b",
       "family": "ollama",
-      "label": "Qwen3 8B (local)",
+      "label": "Qwen3 8B local",
       "contextWindow": 40000,
       "maxOutputTokens": 8192,
       "verified": "community",
-      "notes": "Ollama default num_ctx=4096; subir manualmente para usar el cap real del modelo."
+      "notes": "En Ollama el contexto real depende de num_ctx; por defecto suele ser menor."
     },
     {
       "id": "llama3.3:70b",
       "family": "ollama",
-      "label": "Llama 3.3 70B (local)",
+      "label": "Llama 3.3 70B local",
       "contextWindow": 131072,
       "maxOutputTokens": 8192,
-      "verified": "community"
+      "verified": "community",
+      "notes": "En Ollama el contexto real depende de num_ctx, VRAM/RAM y cuantización."
     },
     {
       "id": "deepseek-r1",
       "family": "ollama",
-      "label": "DeepSeek R1 distill (local)",
+      "label": "DeepSeek R1 distill local",
       "contextWindow": 131072,
       "maxOutputTokens": 8192,
       "verified": "community",
-      "notes": "Distilled. Recomendado num_ctx >= 8192."
+      "notes": "Distilled. Recomendado num_ctx >= 8192; el límite real depende del modelo exacto descargado."
     }
   ]
 }
