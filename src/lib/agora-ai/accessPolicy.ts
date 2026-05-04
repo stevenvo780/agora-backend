@@ -180,7 +180,16 @@ const DOCUMENT_READ_TOOLS = new Set([
   'find_broken_links',
   'find_duplicates',
   'fetch_url',
-  'read_agora_doc'
+  'read_agora_doc',
+  'get_storage_usage',
+  'find_large_documents',
+  'list_recent_workspace_activity',
+  'list_favorites',
+  'lint_document',
+  'lint_st_document',
+  'extract_text_from_pdf',
+  'list_dictionary_words',
+  'find_unused_snippets'
 ]);
 
 const DOCUMENT_WRITE_TOOLS = new Set([
@@ -194,7 +203,12 @@ const DOCUMENT_WRITE_TOOLS = new Set([
   'rename_folder',
   'restore_document',
   'upload_external_url',
-  'apply_snippet_to_document'
+  'apply_snippet_to_document',
+  'duplicate_document',
+  'add_favorite',
+  'remove_favorite',
+  'add_word_to_dictionary',
+  'remove_word_from_dictionary'
 ]);
 
 const DOCUMENT_DELETE_TOOLS = new Set([
@@ -209,7 +223,8 @@ const SNIPPET_TOOLS = new Set([
   'read_snippet',
   'search_snippets',
   'update_snippet',
-  'delete_snippet'
+  'delete_snippet',
+  'import_snippets_from_url'
 ]);
 
 const BOARD_TOOLS = new Set([
@@ -222,6 +237,7 @@ const BOARD_TOOLS = new Set([
   'move_board_card',
   'delete_board_card',
   'bulk_create_board_cards',
+  'archive_board_card',
   'restore_board_card',
   'restore_board_column',
   'extract_pending_tasks'
@@ -235,7 +251,9 @@ const SEMANTIC_TOOLS = new Set([
   'link_concepts',
   'list_glossary_entries',
   'search_glossary_entries',
-  'semantic_search_workspace'
+  'semantic_search_workspace',
+  'find_orphaned_concepts',
+  'merge_concepts'
 ]);
 
 const LOGIC_TOOLS = new Set([
@@ -256,7 +274,11 @@ const ADMIN_TOOLS = new Set([
   'remove_member',
   'change_workspace_settings',
   'transfer_workspace_ownership',
-  'list_members'
+  'list_members',
+  'accept_invite',
+  'decline_invite',
+  'provision_workspace_git',
+  'start_subscription_checkout'
 ]);
 
 const OBSERVABILITY_TOOLS = new Set([
@@ -264,7 +286,13 @@ const OBSERVABILITY_TOOLS = new Set([
   'get_agent_audit_log',
   'get_subscription_status',
   'list_quota',
-  'get_workspace_quota_detail'
+  'get_workspace_quota_detail',
+  'inspect_sync_outbox',
+  'force_emit_sync_ping',
+  'get_document_sync_state',
+  'list_active_terminal_sessions',
+  'get_repo_info',
+  'list_workspace_repos'
 ]);
 
 const UI_EXTENDED_TOOLS = new Set([
@@ -307,7 +335,8 @@ export function getRequiredAgentCapability(call: AgentToolCall): AgentAccessCapa
     call.name === 'write_worker_file' ||
     call.name === 'kill_worker_process' ||
     call.name === 'restart_worker' ||
-    call.name === 'start_worker'
+    call.name === 'start_worker' ||
+    call.name === 'kill_terminal_session'
   ) return 'workerCommand';
   if (call.name === 'report_debug') return 'debug';
   return null;

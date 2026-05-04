@@ -1223,6 +1223,174 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     name: 'get_workspace_quota_detail',
     description: 'Detalle del workspace activo (name, type, plan).',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'duplicate_document',
+    description: 'Clona un documento con un nuevo nombre opcional. Hidrata el contenido REAL desde MinIO antes de duplicar. Si no se da newName, usa "<original> (copia)".',
+    parameters: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string' },
+        newName: { type: 'string' },
+        targetFolder: { type: 'string' }
+      },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'get_storage_usage',
+    description: 'Resumen de uso de espacio del workspace activo: documentCount, totalBytes, minioBytes, firestoreBytes.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'find_large_documents',
+    description: 'Lista documentos cuyo size supera minBytes (default 100KB), ordenados desc.',
+    parameters: {
+      type: 'object',
+      properties: {
+        minBytes: { type: 'number' },
+        limit: { type: 'number', description: '1..50, default 20' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_recent_workspace_activity',
+    description: 'Documentos editados en las últimas N horas, ordenados por updatedAt desc.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sinceHours: { type: 'number', description: '1..720, default 24' },
+        limit: { type: 'number' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_favorites',
+    description: 'Devuelve los documentos marcados como favoritos por el usuario en este workspace.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'add_favorite',
+    description: 'Marca un documento como favorito.',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'remove_favorite',
+    description: 'Quita un documento de favoritos.',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'lint_document',
+    description: 'Linter ligero (~7 reglas regex) para markdown del documento. Para las 53 reglas completas usa el panel Problemas (open_app_panel problems).',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'lint_st_document',
+    description: 'Ejecuta el runtime ST sobre el documento .st y devuelve los diagnostics (errores, warnings, contramodelos). Read-only.',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'list_active_terminal_sessions',
+    description: 'Sesiones de terminal/PTY activas del worker del workspace.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'kill_terminal_session',
+    description: 'Cierra una sesión de terminal por id. Hoy devuelve sugerencia (no hay endpoint REST directo desde Cloud Run).',
+    parameters: { type: 'object', properties: { sessionId: { type: 'string' }, confirmed: { type: 'boolean' } }, required: ['sessionId'], additionalProperties: false }
+  },
+  {
+    name: 'archive_board_card',
+    description: 'Archiva (oculta) o desarchiva una tarjeta Kanban. Más suave que delete.',
+    parameters: { type: 'object', properties: { cardId: { type: 'string' }, archived: { type: 'boolean' } }, required: ['cardId'], additionalProperties: false }
+  },
+  {
+    name: 'get_repo_info',
+    description: 'Info del repo Forgejo asociado al workspace activo (org, nombre, clone hint).',
+    parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
+  },
+  {
+    name: 'list_workspace_repos',
+    description: 'Lista todos los repos Forgejo accesibles para el usuario.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'provision_workspace_git',
+    description: 'Idempotente: asegura que el repo Forgejo del workspace exista y el user tenga acceso. Útil si el repo se borró.',
+    parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
+  },
+  {
+    name: 'extract_text_from_pdf',
+    description: 'Extrae el texto plano de un documento PDF subido al workspace (requiere storagePath en MinIO). Read-only.',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'inspect_sync_outbox',
+    description: 'Eventos sync pendientes del workspace en syncEventsOutbox.',
+    parameters: { type: 'object', properties: { limit: { type: 'number' } }, additionalProperties: false }
+  },
+  {
+    name: 'force_emit_sync_ping',
+    description: 'Emite manualmente un ping RTDB para refrescar clientes. op = created|updated|deleted|refresh.',
+    parameters: { type: 'object', properties: { op: { type: 'string' }, path: { type: 'string' } }, additionalProperties: false }
+  },
+  {
+    name: 'get_document_sync_state',
+    description: 'Estado de sincronización de un documento: synced | storage-only | firestore-only | empty.',
+    parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
+  },
+  {
+    name: 'accept_invite',
+    description: 'Acepta una invitación pendiente al workspace. Requiere que el user haya sido añadido a pendingInvites.',
+    parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
+  },
+  {
+    name: 'decline_invite',
+    description: 'Rechaza una invitación pendiente al workspace.',
+    parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
+  },
+  {
+    name: 'find_orphaned_concepts',
+    description: 'Conceptos del glosario semántico que no tienen relaciones (candidatos a cleanup).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'merge_concepts',
+    description: 'Fusiona dos conceptos: las relaciones de fromId se reasignan a intoId y fromId se elimina. Requiere confirmed:true.',
+    parameters: { type: 'object', properties: { fromId: { type: 'string' }, intoId: { type: 'string' }, confirmed: { type: 'boolean' } }, required: ['fromId', 'intoId'], additionalProperties: false }
+  },
+  {
+    name: 'start_subscription_checkout',
+    description: 'Sugiere abrir el panel de pricing en el cliente. El checkout real corre en el navegador con MercadoPago Bricks.',
+    parameters: { type: 'object', properties: { plan: { type: 'string' } }, required: ['plan'], additionalProperties: false }
+  },
+  {
+    name: 'import_snippets_from_url',
+    description: 'Importa hasta 50 snippets desde una URL pública que devuelva JSON [{title, markdown, category?, description?}]. Requiere confirmed:true.',
+    parameters: { type: 'object', properties: { url: { type: 'string' }, confirmed: { type: 'boolean' } }, required: ['url'], additionalProperties: false }
+  },
+  {
+    name: 'find_unused_snippets',
+    description: 'Snippets cuyo título no aparece referenciado en ningún documento del workspace (heurística).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'list_dictionary_words',
+    description: 'Palabras del diccionario personal del linter (silencia falsos positivos del spell-check).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'add_word_to_dictionary',
+    description: 'Añade una palabra al diccionario personal del linter.',
+    parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'], additionalProperties: false }
+  },
+  {
+    name: 'remove_word_from_dictionary',
+    description: 'Quita una palabra del diccionario personal.',
+    parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'], additionalProperties: false }
   }
 ];
 
