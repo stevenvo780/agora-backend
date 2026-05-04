@@ -171,13 +171,8 @@ export const getFileContent = async (repoFullName: string, path: string): Promis
 
 export interface CommitFileChange {
   path: string;
-  /** raw bytes — se codifica a base64 internamente. Puede ser provisto directamente
-   * o cargarse lazy con `load()` (preferido para commits grandes — evita tener
-   * todos los buffers en RAM al mismo tiempo y revienta a la function por OOM). */
+  /** raw bytes — se codifica a base64 internamente. */
   content?: Buffer;
-  load?: () => Promise<Buffer | null>;
-  /** estimación de bytes para chunking previo a load() */
-  estimatedBytes?: number;
   /** undefined para files nuevos */
   shaIfUpdate?: string;
   operation: 'create' | 'update';
@@ -203,28 +198,21 @@ export interface CommitResult {
  *
  * Body: { files: [{ path, operation, content?, sha? }], message, branch, ... }
  *
- * Esto reduce N round-trips secuenciales a 1, y produce 1 commit en vez de N.
- * Si el endpoint falla por payload demasiado grande, partimos en chunks y
- * devolvemos un error multi-commit (cada chunk genera 1 commit).
+ * Forgejo procesa el body como una transacción: o se escriben todos los
+ * archivos en un commit, o no se escribe nada. No hay chunking — un revert
+ * de un solo SHA deshace lo que el usuario quiso commitear.
+ *
+ * Si Forgejo falla, el operador ve `result.errors` con todos los paths del
+ * intento (porque la operación es all-or-nothing). Probado contra prod:
+ * 200 archivos × 250KB (68MB body) y 1 archivo × 100MB (134MB body)
+ * commitean en una sola request sin partir.
  */
-export interface CommitProgress {
-  totalChunks: number;
-  totalFiles: number;
-}
-
-export interface CommitChunkProgress extends CommitProgress {
-  chunkIndex: number;
-  filesInChunk: number;
-  lastSha?: string;
-  error?: string;
-  attempts?: number;
-}
-
-export interface CommitRetryEvent extends CommitProgress {
-  chunkIndex: number;
-  attempt: number;
-  reason: string;
-}
+export type CommitProgressEvent =
+  | { kind: 'start'; totalFiles: number }
+  | { kind: 'attempt'; attempt: number; totalFiles: number }
+  | { kind: 'retry'; attempt: number; reason: string; totalFiles: number }
+  | { kind: 'done'; sha: string; totalFiles: number }
+  | { kind: 'failed'; totalFiles: number; status: number; reason: string };
 
 export const applyCommit = async (params: {
   repoFullName: string;
@@ -233,150 +221,76 @@ export const applyCommit = async (params: {
   changes: CommitChange[];
   authorName?: string;
   authorEmail?: string;
-  /** límite de bytes por chunk multi-file. Forgejo default body limit ~100MB. */
-  maxChunkBytes?: number;
-  /** límite de archivos por chunk: Forgejo escribe blobs + tree linealmente,
-   * con muchos archivos por commit consume mucha RAM/CPU del peer. */
-  maxChunkFiles?: number;
-  /** callback opcional para emitir progreso por chunk. */
-  onProgress?: (ev: CommitChunkProgress | { kind: 'start'; totalChunks: number; totalFiles: number } | CommitRetryEvent | { kind: 'retry-exhausted'; chunkIndex: number; totalChunks: number; totalFiles: number }) => void;
-  /** intentos por chunk antes de marcar fallido (default 6). */
-  maxAttemptsPerChunk?: number;
-  /** si true, aborta los chunks restantes cuando uno falla (default true) — evita
-   * commits parciales con incoherencia de orden. Si false, sigue con los siguientes. */
-  abortOnChunkFailure?: boolean;
+  /** intentos del POST único antes de marcar fallido (default 6). */
+  maxAttempts?: number;
+  /** callback opcional para emitir progreso de la operación. */
+  onProgress?: (ev: CommitProgressEvent) => void;
 }): Promise<CommitResult> => {
   const branch = params.branch || 'main';
-  const errors: { path: string; status: number; raw: string }[] = [];
-  let lastSha: string | undefined;
+  const totalFiles = params.changes.length;
 
   const author = params.authorName
     ? { author: { name: params.authorName, email: params.authorEmail ?? `${params.authorName}@noreply.agora.local` } }
     : {};
 
-  const buildFile = (c: CommitChange, buf: Buffer | null) => {
+  const buildFile = (c: CommitChange) => {
     if (c.operation === 'delete') {
       return { path: c.path, operation: 'delete', sha: c.shaIfDelete };
     }
     return {
       path: c.path,
       operation: c.operation === 'update' ? 'update' : 'create',
-      content: (buf ?? c.content ?? Buffer.alloc(0)).toString('base64'),
+      content: (c.content ?? Buffer.alloc(0)).toString('base64'),
       ...(c.operation === 'update' && c.shaIfUpdate ? { sha: c.shaIfUpdate } : {})
     };
   };
 
-  // Estimación segura de tamaño de un change SIN cargarlo (evita OOM por preload).
-  const sizeOf = (c: CommitChange): number => {
-    if (c.operation === 'delete') return 256;
-    if (c.content) return Math.ceil(c.content.length * 1.4);
-    if (typeof c.estimatedBytes === 'number') return Math.ceil(c.estimatedBytes * 1.4);
-    return 1024 * 1024; // 1 MB heurística por defecto
-  };
+  params.onProgress?.({ kind: 'start', totalFiles });
+  params.onProgress?.({ kind: 'attempt', attempt: 1, totalFiles });
 
-  // Particionar en chunks por (a) cantidad de archivos y (b) tamaño de payload.
-  // CONSERVADOR por default: 10 archivos / 30 MB para mantener peak memory bajo.
-  const maxBytes = params.maxChunkBytes ?? 30 * 1024 * 1024;
-  const maxFiles = Math.max(1, params.maxChunkFiles ?? 10);
-  const chunks: CommitChange[][] = [];
-  let current: CommitChange[] = [];
-  let currentSize = 0;
-  for (const c of params.changes) {
-    const sz = sizeOf(c);
-    const wouldExceedSize = currentSize + sz > maxBytes;
-    const wouldExceedCount = current.length >= maxFiles;
-    if (current.length > 0 && (wouldExceedSize || wouldExceedCount)) {
-      chunks.push(current);
-      current = [];
-      currentSize = 0;
-    }
-    current.push(c);
-    currentSize += sz;
-  }
-  if (current.length > 0) chunks.push(current);
-
-  params.onProgress?.({ kind: 'start', totalChunks: chunks.length, totalFiles: params.changes.length });
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (!chunk) continue;
-    const chunkIndex = i + 1;
-    const message = chunks.length === 1
-      ? params.message
-      : `${params.message} (parte ${chunkIndex}/${chunks.length})`;
-
-    let r: { status: number; body: unknown; raw: string; attempts: number };
-    try {
-      r = await callWithRetry<unknown>(
-        `/api/v1/repos/${params.repoFullName}/contents`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            files: chunk.map((c) => buildFile(c, null)),
-            message,
-            branch,
-            ...author
-          })
-        },
-        {
-          maxAttempts: params.maxAttemptsPerChunk ?? 6,
-          onRetry: (attempt, reason) => {
-            params.onProgress?.({
-              chunkIndex,
-              totalChunks: chunks.length,
-              totalFiles: params.changes.length,
-              attempt,
-              reason
-            });
-          }
+  let r: { status: number; body: unknown; raw: string; attempts: number };
+  try {
+    r = await callWithRetry<unknown>(
+      `/api/v1/repos/${params.repoFullName}/contents`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          files: params.changes.map(buildFile),
+          message: params.message,
+          branch,
+          ...author
+        })
+      },
+      {
+        maxAttempts: params.maxAttempts ?? 6,
+        onRetry: (attempt, reason) => {
+          params.onProgress?.({ kind: 'retry', attempt, reason, totalFiles });
         }
-      );
-    } catch (e) {
-      const msg = (e as Error)?.message ?? String(e);
-      r = { status: 0, body: null, raw: msg, attempts: params.maxAttemptsPerChunk ?? 6 };
-    }
-
-    let chunkErr: string | undefined;
-    let chunkFailed = false;
-    if (r.status >= 400 || r.status === 0) {
-      chunkErr = `HTTP ${r.status} ${r.raw.slice(0, 120)}`;
-      chunkFailed = true;
-      for (const c of chunk) {
-        errors.push({ path: c.path, status: r.status, raw: r.raw.slice(0, 200) });
       }
-      params.onProgress?.({
-        kind: 'retry-exhausted',
-        chunkIndex,
-        totalChunks: chunks.length,
-        totalFiles: params.changes.length
-      });
-    } else {
-      const parsed = parseForgejoCommitResponse(r.body);
-      if (parsed.ok) lastSha = parsed.value.sha;
-    }
-    params.onProgress?.({
-      totalChunks: chunks.length,
-      totalFiles: params.changes.length,
-      chunkIndex,
-      filesInChunk: chunk.length,
-      lastSha,
-      error: chunkErr,
-      attempts: r.attempts
-    });
-
-    // Default: abortar al primer chunk fallido para evitar commits parciales
-    // con orden incoherente (ej. parte 1/9 OK, 2/9 falla, 3-9 OK → repo en
-    // estado raro). El cliente ve qué archivos quedaron por reintentar.
-    if (chunkFailed && (params.abortOnChunkFailure ?? true)) {
-      const skipped = params.changes.slice(
-        chunks.slice(0, i + 1).reduce((acc, c) => acc + c.length, 0)
-      );
-      for (const c of skipped) {
-        errors.push({ path: c.path, status: 0, raw: 'skipped: aborted after previous chunk failed' });
-      }
-      break;
-    }
+    );
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    r = { status: 0, body: null, raw: msg, attempts: params.maxAttempts ?? 6 };
   }
 
-  return { ok: errors.length === 0, newSha: lastSha, errors };
+  if (r.status >= 400 || r.status === 0) {
+    const reason = `HTTP ${r.status} ${r.raw.slice(0, 120)}`;
+    params.onProgress?.({ kind: 'failed', totalFiles, status: r.status, reason });
+    // All-or-nothing: si la request falla, ninguno de los paths quedó
+    // escrito en Forgejo. El caller necesita el listado completo para
+    // decidir si reintenta o muestra error al usuario.
+    const errors = params.changes.map((c) => ({
+      path: c.path,
+      status: r.status,
+      raw: r.raw.slice(0, 200)
+    }));
+    return { ok: false, errors };
+  }
+
+  const parsed = parseForgejoCommitResponse(r.body);
+  const newSha = parsed.ok ? parsed.value.sha : undefined;
+  if (newSha) {
+    params.onProgress?.({ kind: 'done', sha: newSha, totalFiles });
+  }
+  return { ok: true, newSha, errors: [] };
 };

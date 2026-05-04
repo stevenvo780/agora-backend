@@ -153,7 +153,13 @@ export async function POST(req: NextRequest, context: RouteContext) {
                             changes,
                             authorName,
                             authorEmail,
-                            onProgress: (ev) => send({ event: 'progress', ...ev })
+                            onProgress: (ev) => send({
+                                event: 'progress',
+                                ...ev,
+                                // compat: el cliente actual lee totalChunks; ahora 1
+                                // commit = 1 chunk lógico, así que reportamos 1.
+                                totalChunks: 1
+                            })
                         });
 
                         const okPaths = new Set(planned.map(p => p.repoPath).filter(p => !result.errors.some(e => e.path === p)));
