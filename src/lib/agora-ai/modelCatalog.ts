@@ -1,4 +1,4 @@
-import catalogJson from '@/lib/agora-ai/modelCatalog.json';
+import catalogJson from '@/lib/agora-ai/modelCatalog.json' with { type: 'json' };
 
 export type ModelFamily = 'deepseek' | 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama';
 export type ModelVerified = 'official' | 'community' | 'unverified';
