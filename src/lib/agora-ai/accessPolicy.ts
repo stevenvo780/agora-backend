@@ -105,6 +105,14 @@ export const AGENT_ACCESS_PROFILES: Record<Exclude<AgentAccessProfileId, 'custom
   }
 };
 
+/** Perfiles que omiten el modal de confirmación de acciones destructivas.
+ *  Debe estar sincronizado con el front (AgoraFront/src/lib/agora-ai/accessPolicy.ts). */
+export const AGENT_AUTO_CONFIRM_PROFILES: ReadonlySet<AgentAccessProfileId> = new Set(['developer']);
+
+export function profileAutoConfirms(profile: AgentAccessProfileId): boolean {
+  return AGENT_AUTO_CONFIRM_PROFILES.has(profile);
+}
+
 export const DEFAULT_AGENT_ACCESS_POLICY: AgentAccessPolicy = {
   profile: 'developer',
   capabilities: AGENT_ACCESS_PROFILES.developer.capabilities

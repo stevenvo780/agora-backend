@@ -1,5 +1,6 @@
 import { buildAgoraSystemPrompt, extractThinkingSegments } from '@/lib/agora-ai/systemPrompt';
 import { toAnthropicTools, toGeminiTools, toOpenAITools } from '@/lib/agora-ai/toolDefinitions';
+import { normalizeAgentAccessPolicy, profileAutoConfirms } from '@/lib/agora-ai/accessPolicy';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
 import { isCacheableAgentTool, isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
 import type {
@@ -291,9 +292,24 @@ async function executeToolsParallel(
   executionContext: AgentExecutionContext,
   cache?: Map<string, AgentToolExecutionResult>
 ): Promise<Array<{ toolCall: AgentToolCall; result: AgentToolExecutionResult }>> {
+  // En perfiles que auto-confirman (god mode): saltar el modal por-tool inyectando
+  // confirmed:true en destructivas, y no aplicar el batch-block — el agente ejecuta
+  // sin pausas como anuncia el perfil.
+  const autoConfirms = profileAutoConfirms(
+    normalizeAgentAccessPolicy(executionContext.accessPolicy).profile
+  );
+  if (autoConfirms) {
+    toolCalls = toolCalls.map((c) => isDestructiveAgentTool(c.name)
+      ? { ...c, args: { ...(c.args ?? {}), confirmed: true } }
+      : c);
+  }
+
   // Salvaguarda: si el batch contiene 2+ tools destructivas, rechazamos las
   // posteriores y dejamos que la primera pida confirmación de forma natural.
-  const destructiveBatch = toolCalls.filter((c) => isDestructiveAgentTool(c.name));
+  // No aplica cuando el perfil auto-confirma (no hay modal que esperar).
+  const destructiveBatch = autoConfirms
+    ? []
+    : toolCalls.filter((c) => isDestructiveAgentTool(c.name));
   const blockedDestructive = destructiveBatch.length > 1
     ? new Set(destructiveBatch.slice(1).map((c) => c.id))
     : new Set<string>();
