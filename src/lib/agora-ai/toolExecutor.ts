@@ -13,6 +13,8 @@ import { UI_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/ui';
 import { OBSERVABILITY_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/observability';
 import { FORGEJO_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/git';
 import { SUBSCRIPTION_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/subscription';
+import { AGENT_CONTROL_TOOL_HANDLERS, getCachedToolResult, setCachedToolResult } from '@/lib/agora-ai/toolExecutors/agentControl';
+import { logAgentEvent } from '@/lib/agora-ai/logger';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -28,11 +30,23 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   ...UI_TOOL_HANDLERS,
   ...OBSERVABILITY_TOOL_HANDLERS,
   ...FORGEJO_TOOL_HANDLERS,
-  ...SUBSCRIPTION_TOOL_HANDLERS
+  ...SUBSCRIPTION_TOOL_HANDLERS,
+  ...AGENT_CONTROL_TOOL_HANDLERS
 };
 
 export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionContext): Promise<AgentToolExecutionResult> {
+  const startedAt = Date.now();
   try {
+    // Idempotency: si la misma callId ya se ejecutó en este turno, devolver cached.
+    const cached = getCachedToolResult(call, ctx);
+    if (cached) {
+      logAgentEvent({
+        kind: 'tool.idempotent_hit', tool: call.name, callId: call.id,
+        uid: ctx.uid, workspaceId: ctx.workspaceId
+      });
+      return cached;
+    }
+
     const denial = getAgentAccessDenial(call, ctx.accessPolicy);
     if (denial) {
       const result: AgentToolExecutionResult = {
@@ -53,6 +67,12 @@ export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionC
           }
         }
       };
+      logAgentEvent({
+        kind: 'tool.denied', tool: call.name, callId: call.id,
+        uid: ctx.uid, workspaceId: ctx.workspaceId,
+        capability: denial.capability, profile: denial.profile
+      });
+      setCachedToolResult(call, ctx, result);
       await writeAuditLog(ctx, call, result);
       return result;
     }
@@ -60,11 +80,26 @@ export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionC
     const handler = TOOL_HANDLERS[call.name];
     if (!handler) throw new Error(`Tool desconocida: ${call.name}`);
     const result = await handler(call, ctx);
+    const durationMs = Date.now() - startedAt;
 
+    logAgentEvent({
+      kind: 'tool.ok', tool: call.name, callId: call.id,
+      uid: ctx.uid, workspaceId: ctx.workspaceId,
+      durationMs, ok: result.ok !== false
+    });
+
+    setCachedToolResult(call, ctx, result);
     await writeAuditLog(ctx, call, result);
     return result;
   } catch (error) {
     const result = fail(call, error);
+    const durationMs = Date.now() - startedAt;
+    logAgentEvent({
+      kind: 'tool.error', tool: call.name, callId: call.id,
+      uid: ctx.uid, workspaceId: ctx.workspaceId,
+      durationMs,
+      error: error instanceof Error ? error.message : String(error)
+    });
     await writeAuditLog(ctx, call, result);
     return result;
   }

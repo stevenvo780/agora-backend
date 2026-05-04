@@ -645,7 +645,12 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
       body: JSON.stringify({
         model: options.model,
         max_tokens: maxTokens,
-        system: systemPrompt,
+        // Cache breakpoint en el system prompt: ahorra hasta 90% en input
+        // tokens cuando turnos sucesivos comparten el mismo system. La caché
+        // dura 5 min y se factura input al 25% en cache_read.
+        system: [
+          { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }
+        ],
         messages,
         ...(options.mode === 'agent' ? { tools: toAnthropicTools() } : {}),
         ...(useNativeThinking

@@ -1391,6 +1391,86 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     name: 'remove_word_from_dictionary',
     description: 'Quita una palabra del diccionario personal.',
     parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'], additionalProperties: false }
+  },
+  {
+    name: 'agent_plan_set',
+    description: 'Crea/reemplaza un plan visible al usuario para una tarea multi-paso (≤30 pasos). DEBE llamarse al inicio de tareas que requieren ≥3 tools o cambios destructivos. El usuario ve el checklist en la UI.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: { type: 'array', items: { type: 'string' }, description: 'Descripciones cortas de cada paso (≤280 chars).' }
+      },
+      required: ['steps'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_plan_update_step',
+    description: 'Actualiza el estado de un paso del plan: pending|in_progress|completed|skipped|failed. Marca in_progress al empezarlo y completed/failed al terminarlo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        stepIndex: { type: 'number' },
+        status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'skipped', 'failed'] },
+        notes: { type: 'string', description: 'Nota opcional con detalles del paso.' }
+      },
+      required: ['stepIndex', 'status'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_plan_get',
+    description: 'Devuelve el plan activo y el estado de cada paso.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'agent_plan_clear',
+    description: 'Descarta el plan activo (la tarea terminó o cambió de rumbo).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'agent_remember',
+    description: 'Guarda un hecho persistente sobre el user (scope=user) o sobre este workspace (scope=workspace, default). Útil para preferencias, dominio del user, decisiones de diseño. value puede ser cualquier JSON.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: '1..80 chars, ej. "user.field_of_study"' },
+        value: { description: 'Cualquier valor JSON serializable.' },
+        scope: { type: 'string', enum: ['user', 'workspace'] }
+      },
+      required: ['key', 'value'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_recall_memory',
+    description: 'Recupera una memoria por key o todas las del scope si key vacío.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        scope: { type: 'string', enum: ['user', 'workspace'] }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'agent_list_memories',
+    description: 'Lista los keys de memorias guardadas en ambos scopes (user y workspace).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'agent_forget',
+    description: 'Elimina una memoria específica.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        scope: { type: 'string', enum: ['user', 'workspace'] }
+      },
+      required: ['key'],
+      additionalProperties: false
+    }
   }
 ];
 

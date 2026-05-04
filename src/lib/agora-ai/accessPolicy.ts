@@ -300,7 +300,15 @@ const UI_EXTENDED_TOOLS = new Set([
   'focus_document_section',
   'prompt_user_choice',
   'show_diff_to_user',
-  'report_status_to_user'
+  'report_status_to_user',
+  'agent_plan_set',
+  'agent_plan_update_step',
+  'agent_plan_get',
+  'agent_plan_clear',
+  'agent_remember',
+  'agent_recall_memory',
+  'agent_list_memories',
+  'agent_forget'
 ]);
 
 export function getRequiredAgentCapability(call: AgentToolCall): AgentAccessCapability | null {
