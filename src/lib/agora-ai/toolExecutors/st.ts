@@ -3,7 +3,7 @@ import { formalize as formalizeNLP, type LogicProfile } from '@stevenvo780/autol
 import { collectSTDiagnostics, hasSTExecutionErrors } from '@/lib/st-execution';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, getErrorMessage, fetchDocumentForUser
+  ok, getErrorMessage, fetchDocumentForUser, loadDocumentFullContent
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -235,7 +235,8 @@ async function formalizeDocumentSection(call: AgentToolCall, ctx: AgentExecution
   const profile = typeof call.args.profile === 'string' ? call.args.profile : 'classical.propositional';
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
-  const content = doc.content || '';
+  const hydrated = await loadDocumentFullContent(doc);
+  const content = hydrated.content;
 
   let sectionText = content;
   if (headingTitle) {

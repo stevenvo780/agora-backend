@@ -4,7 +4,7 @@
  */
 import { FieldPath, FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/firebase-admin';
-import { putObject, deleteObject } from '@/lib/nas-storage';
+import { putObject, deleteObject, getObjectBuffer } from '@/lib/nas-storage';
 import { getErrorMessage } from '@/lib/error-utils';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, ensureTextFileName } from '@/lib/storage-path';
@@ -268,6 +268,56 @@ export async function fetchDocumentForUser(documentId: string, ctx: AgentExecuti
     throw new Error('No tienes acceso a este documento');
   }
   return data;
+}
+
+/**
+ * Hidrata el contenido REAL del documento. La arquitectura Agora guarda en
+ * Firestore solo metadata + un cache opcional de `content`; el contenido
+ * canónico vive en MinIO bajo `storagePath`. Este helper:
+ *   1. Si hay storagePath y es texto → lee MinIO y lo devuelve completo.
+ *   2. Si no hay storagePath → devuelve doc.content (cache Firestore).
+ *   3. Si MinIO falla → fallback a doc.content para no romper.
+ *
+ * Se usa por todas las tools que el agente invoca cuando NECESITA el texto
+ * íntegro (read_document, summarize, analyze, formalize, find_broken_links,
+ * find_duplicates, etc.). Antes solo leían `doc.content` y por eso el agente
+ * recibía un resumen viejo cuando el doc real ya había crecido en MinIO.
+ *
+ * Cap: maxBytes opcional (default 1 MB) para evitar leer docs gigantes en
+ * cada turno y saturar la ventana del modelo.
+ */
+export async function loadDocumentFullContent(
+  doc: StoredDocument,
+  options: { maxBytes?: number } = {}
+): Promise<{ content: string; source: 'storage' | 'firestore' | 'empty'; bytesRead: number; truncated: boolean }> {
+  const maxBytes = options.maxBytes ?? 1_000_000;
+  const firestoreContent = typeof doc.content === 'string' ? doc.content : '';
+  const isTextLike = (() => {
+    const mime = (doc.mimeType || '').toLowerCase();
+    if (mime && !mime.startsWith('text/') && !mime.includes('markdown') && !mime.includes('json') && !mime.includes('xml') && !mime.includes('javascript') && !mime.includes('typescript')) {
+      return false;
+    }
+    return true;
+  })();
+  if (doc.storagePath && isTextLike) {
+    try {
+      const buf = await getObjectBuffer(doc.storagePath);
+      if (buf) {
+        const truncated = buf.byteLength > maxBytes;
+        const slice = truncated ? buf.subarray(0, maxBytes) : buf;
+        const content = slice.toString('utf8');
+        return { content, source: 'storage', bytesRead: slice.byteLength, truncated };
+      }
+    } catch {
+      // fallback a Firestore
+    }
+  }
+  if (firestoreContent) {
+    const truncated = firestoreContent.length > maxBytes;
+    const sliced = truncated ? firestoreContent.slice(0, maxBytes) : firestoreContent;
+    return { content: sliced, source: 'firestore', bytesRead: sliced.length, truncated };
+  }
+  return { content: '', source: 'empty', bytesRead: 0, truncated: false };
 }
 
 export async function loadWorkspaceDocuments(ctx: AgentExecutionContext, limit = MAX_DOC_SCAN): Promise<StoredDocument[]> {

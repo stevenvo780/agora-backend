@@ -2,7 +2,8 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, fail, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
-  ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadWorkspaceDocuments,
+  ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadDocumentFullContent,
+  loadWorkspaceDocuments,
   summarizeDocumentMeta, syncTextDocumentToStorage, maybeDeleteStorageObject,
   listWorkspaceSnippets, loadBoardStateIfExists, loadSemanticState,
   fetchWorkerStatus,
@@ -215,14 +216,20 @@ async function readWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionConte
       .slice(0, maxDocuments);
   }
 
-  const bundle: Record<string, unknown> = {
-    documents: docs.map((doc) => ({
-      ...summarizeDocumentMeta(doc),
-      content: includeContent ? truncateText(doc.content || '', maxCharsPerDocument) : undefined,
-      truncated: includeContent ? (doc.content || '').length > maxCharsPerDocument : undefined,
-      mimeType: doc.mimeType || null
-    }))
-  };
+  const docsWithContent = includeContent
+    ? await Promise.all(docs.map(async (doc) => {
+        const hydrated = await loadDocumentFullContent(doc, { maxBytes: maxCharsPerDocument });
+        return {
+          ...summarizeDocumentMeta(doc),
+          content: truncateText(hydrated.content, maxCharsPerDocument),
+          truncated: hydrated.truncated || hydrated.content.length > maxCharsPerDocument,
+          contentSource: hydrated.source,
+          mimeType: doc.mimeType || null
+        };
+      }))
+    : docs.map((doc) => ({ ...summarizeDocumentMeta(doc), mimeType: doc.mimeType || null }));
+
+  const bundle: Record<string, unknown> = { documents: docsWithContent };
 
   if (includeSnippets) {
     const snippets = await listWorkspaceSnippets(ctx);
@@ -321,16 +328,28 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
 async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
+  const maxBytes = typeof call.args.maxBytes === 'number'
+    ? clamp(call.args.maxBytes, 1024, 1_500_000)
+    : 1_000_000;
   const doc = await fetchDocumentForUser(documentId, ctx);
-  return ok(call, `Leí "${doc.name || 'Sin título'}".`, {
+  const hydrated = await loadDocumentFullContent(doc, { maxBytes });
+  const summary = hydrated.source === 'storage'
+    ? `Leí "${doc.name || 'Sin título'}" desde MinIO (${hydrated.bytesRead} bytes${hydrated.truncated ? ', truncado' : ''}).`
+    : hydrated.source === 'firestore'
+      ? `Leí "${doc.name || 'Sin título'}" desde Firestore cache (${hydrated.bytesRead} bytes${hydrated.truncated ? ', truncado' : ''}). Si el contenido parece desactualizado, el doc no tenía storagePath.`
+      : `"${doc.name || 'Sin título'}" está vacío o no tiene contenido textual.`;
+  return ok(call, summary, {
     document: {
       id: doc.id,
       name: doc.name || 'Sin título',
       type: doc.type || DocumentType.Text,
       folder: normalizeFolderPath(doc.folder),
-      content: doc.content || '',
-      preview: excerpt(doc.content || ''),
-      mimeType: doc.mimeType || null
+      content: hydrated.content,
+      contentSource: hydrated.source,
+      bytesRead: hydrated.bytesRead,
+      truncated: hydrated.truncated,
+      mimeType: doc.mimeType || null,
+      storagePath: doc.storagePath || null
     }
   });
 }
@@ -425,9 +444,13 @@ async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
+  // Hidratamos el contenido REAL para el snapshot de rollback — si solo
+  // guardáramos doc.content (Firestore cache) el rollback restauraría una
+  // versión obsoleta, no la última en MinIO.
+  const hydratedPrevious = await loadDocumentFullContent(doc);
   const previousSnapshot = {
     name: doc.name || 'Sin título',
-    content: doc.content || '',
+    content: hydratedPrevious.content,
     folder: normalizeFolderPath(doc.folder),
     type: doc.type || DocumentType.Text,
     workspaceId: doc.workspaceId || ctx.workspaceId,
@@ -437,7 +460,7 @@ async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
   };
 
   const title = typeof call.args.title === 'string' ? call.args.title.trim() : doc.name || 'Sin título';
-  const content = typeof call.args.content === 'string' ? call.args.content : doc.content || '';
+  const content = typeof call.args.content === 'string' ? call.args.content : hydratedPrevious.content;
   const updateData: Record<string, unknown> = {
     name: title,
     content,
@@ -516,9 +539,11 @@ async function deleteDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
     });
   }
 
+  // Hidratar contenido real para snapshot de restore_document.
+  const hydratedSnapshot = await loadDocumentFullContent(doc);
   const snapshot = {
     name: doc.name || 'Sin título',
-    content: doc.content || '',
+    content: hydratedSnapshot.content,
     folder: normalizeFolderPath(doc.folder),
     type: doc.type || DocumentType.Text,
     workspaceId: doc.workspaceId || ctx.workspaceId,

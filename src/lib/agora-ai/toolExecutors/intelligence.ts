@@ -3,7 +3,8 @@ import {
 } from '@/lib/agora-ai/documentIntelligence';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, confirm, clamp, fetchDocumentForUser, loadWorkspaceDocuments, MAX_DOC_SCAN,
+  ok, confirm, clamp, fetchDocumentForUser, loadDocumentFullContent,
+  loadWorkspaceDocuments, MAX_DOC_SCAN,
   resolveSnippetId, adminDb, FieldValue, DocumentType,
   type StoredDocument
 } from './shared';
@@ -159,11 +160,13 @@ async function summarizeDocument(call: AgentToolCall, ctx: AgentExecutionContext
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
   const maxSentences = clamp(typeof call.args.maxSentences === 'number' ? call.args.maxSentences : 4, 1, 8);
-  const { summary, headings } = summarizeMarkdown(doc.content || '', maxSentences);
-  return ok(call, `Resumí "${doc.name || 'Sin título'}".`, {
+  const hydrated = await loadDocumentFullContent(doc);
+  const { summary, headings } = summarizeMarkdown(hydrated.content, maxSentences);
+  return ok(call, `Resumí "${doc.name || 'Sin título'}" (${hydrated.bytesRead} bytes desde ${hydrated.source}).`, {
     document: { id: doc.id, name: doc.name || 'Sin título' },
     summary,
-    headings: headings.slice(0, 10)
+    headings: headings.slice(0, 10),
+    contentSource: hydrated.source
   });
 }
 
@@ -175,10 +178,14 @@ async function compareDocuments(call: AgentToolCall, ctx: AgentExecutionContext)
     fetchDocumentForUser(leftDocumentId, ctx),
     fetchDocumentForUser(rightDocumentId, ctx)
   ]);
-  const comparison = compareMarkdownDocuments(left.content || '', right.content || '');
+  const [leftHydrated, rightHydrated] = await Promise.all([
+    loadDocumentFullContent(left),
+    loadDocumentFullContent(right)
+  ]);
+  const comparison = compareMarkdownDocuments(leftHydrated.content, rightHydrated.content);
   return ok(call, `Comparé "${left.name || 'Documento A'}" con "${right.name || 'Documento B'}".`, {
-    left: { id: left.id, name: left.name || 'Documento A' },
-    right: { id: right.id, name: right.name || 'Documento B' },
+    left: { id: left.id, name: left.name || 'Documento A', contentSource: leftHydrated.source },
+    right: { id: right.id, name: right.name || 'Documento B', contentSource: rightHydrated.source },
     comparison
   });
 }
@@ -187,10 +194,12 @@ async function analyzeDocument(call: AgentToolCall, ctx: AgentExecutionContext) 
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
-  const analysis = analyzeMarkdown(doc.content || '');
-  return ok(call, `Analicé "${doc.name || 'Sin título'}".`, {
+  const hydrated = await loadDocumentFullContent(doc);
+  const analysis = analyzeMarkdown(hydrated.content);
+  return ok(call, `Analicé "${doc.name || 'Sin título'}" (${hydrated.bytesRead} bytes desde ${hydrated.source}).`, {
     document: { id: doc.id, name: doc.name || 'Sin título' },
-    analysis
+    analysis,
+    contentSource: hydrated.source
   });
 }
 
@@ -219,10 +228,12 @@ async function outlineDocumentTool(call: AgentToolCall, ctx: AgentExecutionConte
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
-  const headings = parseMarkdownHeadings(doc.content || '');
+  const hydrated = await loadDocumentFullContent(doc);
+  const headings = parseMarkdownHeadings(hydrated.content);
   return ok(call, `Esquema: ${headings.length} encabezado(s).`, {
     document: { id: doc.id, name: doc.name || 'Sin título' },
-    headings
+    headings,
+    contentSource: hydrated.source
   });
 }
 
@@ -230,7 +241,8 @@ async function findBrokenLinksTool(call: AgentToolCall, ctx: AgentExecutionConte
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
-  const content = doc.content || '';
+  const hydrated = await loadDocumentFullContent(doc);
+  const content = hydrated.content;
   const linkRegex = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   const allLinks: Array<{ text: string; href: string; line: number }> = [];
   const lines = content.split('\n');
@@ -283,11 +295,15 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 async function findDuplicatesTool(call: AgentToolCall, ctx: AgentExecutionContext) {
   const minSimilarity = clamp(typeof call.args.minSimilarity === 'number' ? call.args.minSimilarity : 0.6, 0.1, 1);
   const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
-  const textDocs = docs.filter((d: StoredDocument) => (d.type || DocumentType.Text) !== DocumentType.Folder && (d.content || '').length >= 50);
-  const fingerprints = textDocs.map((d: StoredDocument) => ({
-    id: d.id, name: d.name || 'Sin título',
-    hash: quickHash(d.content || ''),
-    shingles: shingles(d.content || '')
+  const textDocs = docs.filter((d: StoredDocument) => (d.type || DocumentType.Text) !== DocumentType.Folder);
+  const hydrated = await Promise.all(textDocs.map(async (d) => {
+    const h = await loadDocumentFullContent(d, { maxBytes: 200_000 });
+    return { id: d.id, name: d.name || 'Sin título', content: h.content };
+  }));
+  const fingerprints = hydrated.filter(d => d.content.length >= 50).map((d) => ({
+    id: d.id, name: d.name,
+    hash: quickHash(d.content),
+    shingles: shingles(d.content)
   }));
   const exactMatches: Array<{ aId: string; bId: string; aName: string; bName: string }> = [];
   const seenHashes = new Map<string, typeof fingerprints[0]>();
@@ -329,7 +345,8 @@ async function applySnippetToDocumentTool(call: AgentToolCall, ctx: AgentExecuti
   const snippet = snippetSnap.data() as Record<string, unknown>;
   const snippetText = String(snippet.markdown || snippet.description || '');
 
-  const previousContent = doc.content || '';
+  const hydrated = await loadDocumentFullContent(doc);
+  const previousContent = hydrated.content;
   const newContent = position === 'start'
     ? `${snippetText}\n\n${previousContent}`
     : `${previousContent}\n\n${snippetText}`;
