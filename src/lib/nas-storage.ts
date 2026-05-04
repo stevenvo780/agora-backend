@@ -112,8 +112,33 @@ export const moveObject = async (fromKey: string, toKey: string): Promise<void> 
   await deleteObject(fromKey).catch(() => undefined);
 };
 
-export const presignGet = async (key: string, ttlSeconds = 60 * 60): Promise<string> => {
-  return getSignedUrl(getNasClient(), new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: ttlSeconds });
+export interface PresignGetOptions {
+  /**
+   * Override del Content-Disposition que MinIO devuelve. Útil para que
+   * viewers externos (Office Online, Google Docs Viewer) identifiquen el
+   * tipo de archivo cuando la URL firmada lleva query string que oculta
+   * la extensión.
+   */
+  responseContentDisposition?: string;
+  /** Override del Content-Type devuelto. */
+  responseContentType?: string;
+}
+
+export const presignGet = async (
+  key: string,
+  ttlSeconds = 60 * 60,
+  options: PresignGetOptions = {}
+): Promise<string> => {
+  return getSignedUrl(
+    getNasClient(),
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ResponseContentDisposition: options.responseContentDisposition,
+      ResponseContentType: options.responseContentType
+    }),
+    { expiresIn: ttlSeconds }
+  );
 };
 
 export const presignPut = async (

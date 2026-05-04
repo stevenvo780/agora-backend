@@ -241,7 +241,20 @@ export async function GET(req: NextRequest, context: RouteContext) {
         }
         if (data.type === DocumentType.File && storagePath && isNasConfigured()) {
             try {
-                data.url = await presignGet(storagePath, 60 * 60);
+                const safeName = (typeof data.name === 'string' ? data.name : '')
+                    .replace(/[\r\n"\\]/g, '_')
+                    .slice(0, 200) || 'archivo';
+                const mime = typeof data.mimeType === 'string' && data.mimeType.trim()
+                    ? data.mimeType.trim()
+                    : undefined;
+                // Office Online y Google Docs Viewer detectan el tipo de archivo
+                // a partir de Content-Disposition/Content-Type, no del path.
+                // Sin esto, una URL firmada con query string termina en
+                // "filenotfound.htm" en officeapps.live.com.
+                data.url = await presignGet(storagePath, 60 * 60, {
+                    responseContentDisposition: `inline; filename="${safeName}"`,
+                    responseContentType: mime
+                });
             } catch (error) {
                 console.warn('Failed to refresh signed URL on GET:', getErrorMessage(error));
             }
