@@ -1,12 +1,10 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, confirm, fail, clamp, truncateText,
+  ok, confirm, clamp, truncateText,
   fetchWorkerStatus, fetchNexusJson, fetchAppJson, fetchAppSseEvents,
   resolveWorkerWorkspaceId, loadWorkspaceDocuments,
-  getErrorMessage, DocumentType, MAX_DOC_SCAN, resolveSemanticDocId,
-  type StoredDocument
+  getErrorMessage, DocumentType, MAX_DOC_SCAN
 } from './shared';
-import { normalizeFolderPath } from '@/lib/folder-utils';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 

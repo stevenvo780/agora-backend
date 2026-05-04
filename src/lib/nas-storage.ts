@@ -79,7 +79,7 @@ export const getObjectBuffer = async (key: string): Promise<Buffer | null> => {
     }
     // web stream
     const reader = (stream as ReadableStream<Uint8Array>).getReader();
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;

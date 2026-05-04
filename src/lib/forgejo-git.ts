@@ -125,7 +125,7 @@ export const listRepoTree = async (
   // cliente los reportaba como `create` → 422 "file already exists".
   const PAGE_SIZE = 1000;
   let page = 1;
-  while (true) {
+  for (;;) {
     const r = await call<unknown>(
       `/api/v1/repos/${repoFullName}/git/trees/${head.sha}?recursive=true&per_page=${PAGE_SIZE}&page=${page}`
     );

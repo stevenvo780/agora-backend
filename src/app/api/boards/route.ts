@@ -91,7 +91,7 @@ const deleteCardsByColumn = async (boardRef: DocumentReference, columnId: string
   const batchLimit = 400;
   let lastDoc: QueryDocumentSnapshot | null = null;
 
-  while (true) {
+  for (;;) {
     let query = boardRef
       .collection('cards')
       .where('columnId', '==', columnId)

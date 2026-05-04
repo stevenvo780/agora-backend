@@ -5,16 +5,13 @@ import {
   ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadWorkspaceDocuments,
   summarizeDocumentMeta, syncTextDocumentToStorage, maybeDeleteStorageObject,
   listWorkspaceSnippets, loadBoardStateIfExists, loadSemanticState,
-  loadBoardState, resolveBoardColumn,
-  fetchWorkerStatus, fetchNexusJson, fetchAppJson, fetchAppSseEvents,
-  resolveWorkerWorkspaceId,
-  normalizeFolderPath, adminDb, FieldValue, FieldPath, getErrorMessage,
+  fetchWorkerStatus,
+  normalizeFolderPath, adminDb, FieldValue,
   DocumentType, PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId,
-  MAX_DOC_SCAN, DEFAULT_DOC_LIMIT, resolveSemanticDocId,
+  MAX_DOC_SCAN, DEFAULT_DOC_LIMIT,
   type StoredDocument, type StoredSnippet, type StoredBoardColumn, type StoredBoardCard
 } from './shared';
 import { EMPTY_SEMANTIC_WORKSPACE_STATE } from '@/lib/semantic/workspace-state';
-import { normalizeLookupKey } from '../toolExecutor-helpers';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -626,6 +623,7 @@ export const DOCUMENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
   create_document: createDocument,
   create_file: createDocument,
   update_document: updateDocument,
+  restore_document: restoreDocument,
   rename_document: renameDocument,
   rename_file: renameDocument,
   move_document: moveDocument,

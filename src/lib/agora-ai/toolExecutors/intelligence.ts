@@ -3,7 +3,7 @@ import {
 } from '@/lib/agora-ai/documentIntelligence';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp, excerpt, fetchDocumentForUser
+  ok, clamp, fetchDocumentForUser
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;

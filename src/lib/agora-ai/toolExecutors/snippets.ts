@@ -2,8 +2,7 @@ import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, clamp, excerpt,
   ensureWorkspaceAccess, listWorkspaceSnippets, fetchSnippetForUser,
-  adminDb, FieldValue, isPersonalWorkspaceId,
-  type StoredSnippet
+  adminDb, FieldValue, isPersonalWorkspaceId
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;

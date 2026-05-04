@@ -8,10 +8,9 @@ import {
 } from '@/lib/semantic/workspace-state';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp, excerpt,
+  ok, clamp,
   ensureWorkspaceAccess,
-  adminDb, FieldValue, resolveSemanticDocId, normalizeLookupKey,
-  isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID
+  adminDb, FieldValue, resolveSemanticDocId, normalizeLookupKey
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;

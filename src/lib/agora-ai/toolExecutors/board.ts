@@ -1,11 +1,10 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, confirm, clamp, excerpt,
+  ok, confirm,
   ensureBoardRef, loadBoardState, resolveBoardColumn, resolveBoardCard,
-  fetchDocumentForUser, ensureWorkspaceAccess,
+  fetchDocumentForUser,
   adminDb, FieldValue,
-  normalizeFolderPath,
-  type StoredBoardColumn, type StoredBoardCard
+  normalizeFolderPath
 } from './shared';
 import { extractChecklistTasks } from '@/lib/agora-ai/documentIntelligence';
 

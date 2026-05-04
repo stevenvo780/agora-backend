@@ -17,7 +17,7 @@ import { emitPing } from '@/lib/nas-events';
 const deleteCollectionInBatches = async (collectionRef: CollectionReference, batchLimit = 400) => {
   let lastDoc: QueryDocumentSnapshot | null = null;
 
-  while (true) {
+  for (;;) {
     let query = collectionRef.orderBy('__name__').limit(batchLimit);
     if (lastDoc) {
       query = query.startAfter(lastDoc);
@@ -661,7 +661,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
           const batchLimit = 400;
           let count = 0;
           let lastDoc: QueryDocumentSnapshot | null = null;
-          while (true) {
+          for (;;) {
             let q = adminDb.collection('documents').where('workspaceId', '==', sourceWorkspaceId).orderBy('__name__').limit(batchLimit);
             if (lastDoc) q = q.startAfter(lastDoc);
             const snap = await q.get();
@@ -767,7 +767,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
         const batchLimit = 400;
         let count = 0;
         let lastDoc: QueryDocumentSnapshot | null = null;
-        while (true) {
+        for (;;) {
           let q = adminDb.collection('documents').where('workspaceId', '==', id).orderBy('__name__').limit(batchLimit);
           if (lastDoc) q = q.startAfter(lastDoc);
           const snap = await q.get();
