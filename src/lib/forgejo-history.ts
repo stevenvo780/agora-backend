@@ -402,8 +402,7 @@ export const revertCommitViaApi = async (params: {
     message,
     changes,
     ...(params.authorName ? { authorName: params.authorName } : {}),
-    ...(params.authorEmail ? { authorEmail: params.authorEmail } : {}),
-    abortOnChunkFailure: true
+    ...(params.authorEmail ? { authorEmail: params.authorEmail } : {})
   });
 
   if (!res.ok) {
