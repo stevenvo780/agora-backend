@@ -1,0 +1,16 @@
+.gcloudignore
+.git
+.gitignore
+
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+package.json.deploy-bak
+package-lock.json.deploy-bak
+
+# .tarballs/ se incluye explícitamente: contiene los paquetes file:* del workspace
+# (@agora/contracts, @stevenvo780/st-lang, @stevenvo780/autologic) preparados por
+# scripts/prepare-deploy.mjs. Sin esto el build de Cloud Run no resuelve las deps.
