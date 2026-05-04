@@ -8,6 +8,9 @@ import { BOARD_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/board';
 import { SEMANTIC_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/semantic';
 import { WORKER_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/worker';
 import { INTELLIGENCE_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/intelligence';
+import { ADMIN_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/admin';
+import { UI_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/ui';
+import { OBSERVABILITY_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/observability';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -18,7 +21,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   ...BOARD_TOOL_HANDLERS,
   ...SEMANTIC_TOOL_HANDLERS,
   ...WORKER_TOOL_HANDLERS,
-  ...INTELLIGENCE_TOOL_HANDLERS
+  ...INTELLIGENCE_TOOL_HANDLERS,
+  ...ADMIN_TOOL_HANDLERS,
+  ...UI_TOOL_HANDLERS,
+  ...OBSERVABILITY_TOOL_HANDLERS
 };
 
 export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionContext): Promise<AgentToolExecutionResult> {

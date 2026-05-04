@@ -3,7 +3,9 @@ import {
 } from '@/lib/agora-ai/documentIntelligence';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp, fetchDocumentForUser
+  ok, confirm, clamp, fetchDocumentForUser, loadWorkspaceDocuments, MAX_DOC_SCAN,
+  resolveSnippetId, adminDb, FieldValue, DocumentType,
+  type StoredDocument
 } from './shared';
 
 const FETCH_URL_MAX_BYTES_DEFAULT = 50_000;
@@ -192,10 +194,182 @@ async function analyzeDocument(call: AgentToolCall, ctx: AgentExecutionContext) 
   });
 }
 
+function parseMarkdownHeadings(content: string) {
+  const lines = content.split('\n');
+  const headings: Array<{ level: number; text: string; line: number }> = [];
+  let inFence = false;
+  let fenceMarker = '';
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const fenceMatch = line.match(/^(```|~~~)/);
+    if (fenceMatch?.[1]) {
+      const marker = fenceMatch[1];
+      if (!inFence) { inFence = true; fenceMarker = marker; }
+      else if (line.startsWith(fenceMarker)) { inFence = false; fenceMarker = ''; }
+      continue;
+    }
+    if (inFence) continue;
+    const m = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (m?.[1] && m[2]) headings.push({ level: m[1].length, text: m[2].trim(), line: i + 1 });
+  }
+  return headings;
+}
+
+async function outlineDocumentTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const headings = parseMarkdownHeadings(doc.content || '');
+  return ok(call, `Esquema: ${headings.length} encabezado(s).`, {
+    document: { id: doc.id, name: doc.name || 'Sin título' },
+    headings
+  });
+}
+
+async function findBrokenLinksTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const content = doc.content || '';
+  const linkRegex = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  const allLinks: Array<{ text: string; href: string; line: number }> = [];
+  const lines = content.split('\n');
+  let match: RegExpExecArray | null;
+  while ((match = linkRegex.exec(content)) !== null) {
+    const before = content.slice(0, match.index);
+    const lineNum = (before.match(/\n/g)?.length ?? 0) + 1;
+    allLinks.push({ text: match[1] || '', href: match[2] || '', line: lineNum });
+  }
+  void lines;
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const docNames = new Set(docs.map(d => (d.name || '').toLowerCase()));
+  const docPaths = new Set(docs.map(d => `${d.folder ? d.folder + '/' : ''}${d.name || ''}`.toLowerCase()));
+  const broken: typeof allLinks = [];
+  for (const link of allLinks) {
+    const href = link.href.trim();
+    if (!href) continue;
+    if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href) || href.startsWith('#')) continue;
+    const normalized = href.replace(/^\.?\//, '').toLowerCase();
+    if (!docNames.has(normalized) && !docPaths.has(normalized)) broken.push(link);
+  }
+  return ok(call, `Encontré ${allLinks.length} enlace(s); ${broken.length} parecen rotos (no apuntan a ningún doc del workspace ni son URL externa).`, {
+    document: { id: doc.id, name: doc.name || 'Sin título' },
+    totalLinks: allLinks.length,
+    brokenLinks: broken
+  });
+}
+
+function quickHash(text: string): string {
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  return hash.toString(36);
+}
+
+function shingles(text: string, size = 5): Set<string> {
+  const tokens = text.toLowerCase().replace(/\s+/g, ' ').split(' ').filter(Boolean);
+  const out = new Set<string>();
+  for (let i = 0; i + size <= tokens.length; i += 1) out.add(tokens.slice(i, i + size).join(' '));
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let inter = 0;
+  for (const v of a) if (b.has(v)) inter += 1;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+async function findDuplicatesTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const minSimilarity = clamp(typeof call.args.minSimilarity === 'number' ? call.args.minSimilarity : 0.6, 0.1, 1);
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const textDocs = docs.filter((d: StoredDocument) => (d.type || DocumentType.Text) !== DocumentType.Folder && (d.content || '').length >= 50);
+  const fingerprints = textDocs.map((d: StoredDocument) => ({
+    id: d.id, name: d.name || 'Sin título',
+    hash: quickHash(d.content || ''),
+    shingles: shingles(d.content || '')
+  }));
+  const exactMatches: Array<{ aId: string; bId: string; aName: string; bName: string }> = [];
+  const seenHashes = new Map<string, typeof fingerprints[0]>();
+  for (const fp of fingerprints) {
+    const prev = seenHashes.get(fp.hash);
+    if (prev) exactMatches.push({ aId: prev.id, bId: fp.id, aName: prev.name, bName: fp.name });
+    else seenHashes.set(fp.hash, fp);
+  }
+  const similarPairs: Array<{ aId: string; bId: string; aName: string; bName: string; similarity: number }> = [];
+  for (let i = 0; i < fingerprints.length; i += 1) {
+    for (let j = i + 1; j < fingerprints.length; j += 1) {
+      const a = fingerprints[i]!;
+      const b = fingerprints[j]!;
+      if (a.hash === b.hash) continue;
+      const sim = jaccard(a.shingles, b.shingles);
+      if (sim >= minSimilarity) similarPairs.push({ aId: a.id, bId: b.id, aName: a.name, bName: b.name, similarity: Math.round(sim * 100) / 100 });
+    }
+  }
+  similarPairs.sort((p, q) => q.similarity - p.similarity);
+  return ok(call, `${exactMatches.length} duplicado(s) exacto(s), ${similarPairs.length} par(es) similares (≥${minSimilarity}).`, {
+    documentCount: fingerprints.length,
+    exactDuplicates: exactMatches,
+    similarPairs: similarPairs.slice(0, 50)
+  });
+}
+
+async function applySnippetToDocumentTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  const snippetId = String(call.args.snippetId || '').trim();
+  const position = String(call.args.position || 'end').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!documentId || !snippetId) throw new Error('documentId y snippetId son requeridos');
+  if (!['start', 'end', 'cursor'].includes(position)) throw new Error('position debe ser start|end|cursor');
+
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const resolvedSnippetId = await resolveSnippetId(snippetId, ctx);
+  const snippetSnap = await adminDb.collection('snippets').doc(resolvedSnippetId).get();
+  if (!snippetSnap.exists) throw new Error('Snippet no encontrado');
+  const snippet = snippetSnap.data() as Record<string, unknown>;
+  const snippetText = String(snippet.markdown || snippet.description || '');
+
+  const previousContent = doc.content || '';
+  const newContent = position === 'start'
+    ? `${snippetText}\n\n${previousContent}`
+    : `${previousContent}\n\n${snippetText}`;
+
+  if (!confirmed) {
+    return confirm(call, `¿Insertar el snippet "${String(snippet.title || 'Sin título')}" (${snippetText.length} bytes) ${position === 'start' ? 'al inicio' : 'al final'} de "${doc.name || 'Sin título'}"?`, {
+      documentId: doc.id, snippetId: resolvedSnippetId, position
+    });
+  }
+
+  await adminDb.collection('documents').doc(doc.id).update({
+    content: newContent,
+    updatedAt: FieldValue.serverTimestamp(),
+    lastUpdatedBy: ctx.uid
+  });
+
+  return ok(call, `Inserté snippet "${String(snippet.title || 'Sin título')}" en "${doc.name || 'Sin título'}".`, {
+    document: { id: doc.id, name: doc.name || 'Sin título' },
+    snippet: { id: resolvedSnippetId, title: snippet.title || 'Sin título' },
+    position,
+    newContentLength: newContent.length
+  }, [{ action: 'update_document', args: { documentId: doc.id, content: previousContent, confirmed: true } }]);
+}
+
+async function semanticSearchWorkspaceStub(call: AgentToolCall, _ctx: AgentExecutionContext) {
+  return ok(call, 'Búsqueda semántica vectorial no implementada — Agora aún no genera embeddings de documentos. Usa `search_workspace` para búsqueda por tokens; añadir embeddings requiere OpenAI/Gemini embeddings + vector store (decisión de producto).', {
+    notImplementedFully: true,
+    suggestion: 'usar search_workspace o search_documents'
+  });
+}
+
 export const INTELLIGENCE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   summarize_document: summarizeDocument,
   compare_documents: compareDocuments,
   analyze_document: analyzeDocument,
   fetch_url: fetchUrlTool,
-  read_agora_doc: readAgoraDocTool
+  read_agora_doc: readAgoraDocTool,
+  outline_document: outlineDocumentTool,
+  find_broken_links: findBrokenLinksTool,
+  find_duplicates: findDuplicatesTool,
+  apply_snippet_to_document: applySnippetToDocumentTool,
+  semantic_search_workspace: semanticSearchWorkspaceStub
 };

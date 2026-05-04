@@ -3,7 +3,7 @@ import { formalize as formalizeNLP, type LogicProfile } from '@stevenvo780/autol
 import { collectSTDiagnostics, hasSTExecutionErrors } from '@/lib/st-execution';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, getErrorMessage
+  ok, getErrorMessage, fetchDocumentForUser
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -185,6 +185,90 @@ async function explainFormalization(call: AgentToolCall, ctx: AgentExecutionCont
   });
 }
 
+async function proveStep(call: AgentToolCall, _ctx: AgentExecutionContext) {
+  const program = String(call.args.program || '').trim();
+  const conclusion = String(call.args.conclusion || '').trim();
+  const fromAxiomsRaw = call.args.fromAxioms;
+  const fromAxioms = Array.isArray(fromAxiomsRaw) ? fromAxiomsRaw.map(String).filter(Boolean) : [];
+  if (!program || !conclusion) throw new Error('program y conclusion son requeridos');
+
+  const fullProgram = `${program}\nderive ${conclusion} from {${fromAxioms.join(', ')}}`;
+  try {
+    const result = evaluateST(fullProgram);
+    const lastResult = Array.isArray(result.results) ? result.results[result.results.length - 1] : null;
+    return ok(call, lastResult ? `Resultado: status=${lastResult.status}.` : 'Programa ejecutado.', {
+      conclusion, fromAxioms, status: lastResult?.status ?? null,
+      result: lastResult ?? null,
+      diagnostics: collectSTDiagnostics(result)
+    });
+  } catch (error) {
+    return ok(call, `Falló la prueba: ${getErrorMessage(error)}`, { error: getErrorMessage(error) });
+  }
+}
+
+async function compareLogicProfiles(call: AgentToolCall, _ctx: AgentExecutionContext) {
+  const formula = String(call.args.formula || '').trim();
+  const profilesArg = Array.isArray(call.args.profiles) ? call.args.profiles.map(String) : [];
+  if (!formula) throw new Error('formula es requerida');
+  const allProfiles = listProfiles();
+  const allProfileIds = new Set(allProfiles.map(String));
+  const profiles = profilesArg.length
+    ? profilesArg.filter((p): p is string => allProfileIds.has(p))
+    : allProfiles.slice(0, 6).map(String);
+  const matrix = await Promise.all(profiles.map(async (profile) => {
+    try {
+      const program = `logic ${profile}\ncheck valid ${formula}`;
+      const result = evaluateST(program);
+      const lastResult = Array.isArray(result.results) ? result.results[result.results.length - 1] : null;
+      return { profile, status: lastResult?.status ?? 'unknown', error: null };
+    } catch (error) {
+      return { profile, status: 'error', error: getErrorMessage(error) };
+    }
+  }));
+  const summary = matrix.map(m => `${m.profile}=${m.status}`).join(', ');
+  return ok(call, `Comparación: ${summary}.`, { formula, profiles, matrix });
+}
+
+async function formalizeDocumentSection(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  const headingTitle = typeof call.args.headingTitle === 'string' ? call.args.headingTitle.trim().toLowerCase() : '';
+  const profile = typeof call.args.profile === 'string' ? call.args.profile : 'classical.propositional';
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const content = doc.content || '';
+
+  let sectionText = content;
+  if (headingTitle) {
+    const lines = content.split('\n');
+    let inSection = false;
+    let sectionLevel = 0;
+    const captured: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (m && m[1] && m[2]) {
+        const level = m[1].length;
+        const title = m[2].trim().toLowerCase();
+        if (!inSection && title === headingTitle) {
+          inSection = true; sectionLevel = level; continue;
+        }
+        if (inSection && level <= sectionLevel) break;
+      }
+      if (inSection) captured.push(line);
+    }
+    sectionText = captured.join('\n').trim();
+    if (!sectionText) {
+      return ok(call, `No encontré la sección "${headingTitle}" en el documento.`, { documentId, headingTitle, found: false });
+    }
+  }
+
+  const formalization = formalizeNLP(sectionText, { profile: profile as LogicProfile });
+  return ok(call, `Formalización del${headingTitle ? ` heading "${headingTitle}" del` : ''} documento "${doc.name}" en perfil ${profile}.`, {
+    documentId, headingTitle: headingTitle || null, profile,
+    sourceLength: sectionText.length,
+    formalization
+  });
+}
+
 export const ST_TOOL_HANDLERS: Record<string, ToolHandler> = {
   check_logic: checkLogic,
   formalize_text: formalizeText,
@@ -192,5 +276,8 @@ export const ST_TOOL_HANDLERS: Record<string, ToolHandler> = {
   validate_st_syntax: validateStSyntax,
   run_st_program: runStProgram,
   render_st_glossary: renderStGlossary,
-  explain_formalization: explainFormalization
+  explain_formalization: explainFormalization,
+  prove_step: proveStep,
+  compare_logic_profiles: compareLogicProfiles,
+  formalize_document_section: formalizeDocumentSection
 };

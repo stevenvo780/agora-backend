@@ -310,6 +310,35 @@ async function extractPendingTasks(call: AgentToolCall, ctx: AgentExecutionConte
   }, createdCards.map((card) => ({ action: 'delete_board_card', args: { cardId: card.id, confirmed: true } })));
 }
 
+async function bulkCreateBoardCards(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const cardsRaw = Array.isArray(call.args.cards) ? call.args.cards : [];
+  if (cardsRaw.length === 0) throw new Error('cards (array) es requerido');
+  if (cardsRaw.length > 50) throw new Error('Máximo 50 tarjetas por bulk');
+  const created: Array<{ id: string; title: string; columnId: string }> = [];
+  const failures: Array<{ index: number; error: string; title?: string }> = [];
+  for (let i = 0; i < cardsRaw.length; i += 1) {
+    const cardArg = cardsRaw[i] as Record<string, unknown>;
+    try {
+      const result = await createBoardCard({
+        ...call,
+        id: `${call.id}.${i}`,
+        args: cardArg
+      }, ctx);
+      const data = (result.data as Record<string, unknown> | undefined)?.card as { id?: string; title?: string; columnId?: string } | undefined;
+      if (data?.id) created.push({ id: data.id, title: data.title || 'Sin título', columnId: data.columnId || '' });
+    } catch (error) {
+      failures.push({
+        index: i,
+        title: typeof cardArg?.title === 'string' ? cardArg.title : undefined,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return ok(call, `Bulk: ${created.length} creada(s)${failures.length ? `, ${failures.length} fallida(s)` : ''}.`, {
+    createdCount: created.length, failureCount: failures.length, created, failures
+  }, created.length ? [{ action: 'rollback_bulk_cards', args: { cardIds: created.map(c => c.id) } }] : []);
+}
+
 export const BOARD_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_board: getBoard,
   create_board_column: createBoardColumn,
@@ -319,6 +348,7 @@ export const BOARD_TOOL_HANDLERS: Record<string, ToolHandler> = {
   update_board_card: updateBoardCard,
   move_board_card: moveBoardCard,
   delete_board_card: deleteBoardCard,
+  bulk_create_board_cards: bulkCreateBoardCards,
   restore_board_card: restoreBoardCard,
   restore_board_column: restoreBoardColumn,
   extract_pending_tasks: extractPendingTasks

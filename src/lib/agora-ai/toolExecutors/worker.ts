@@ -413,6 +413,170 @@ async function getWorkerStatus(call: AgentToolCall, ctx: AgentExecutionContext) 
   );
 }
 
+async function gitDiff(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const path = typeof call.args.path === 'string' ? call.args.path.trim() : '';
+  const staged = call.args.staged === true;
+  const cmd = staged
+    ? `cd /workspace && git diff --cached --stat && echo --- && git diff --cached ${path ? `-- ${shellQuote(path)}` : ''} | head -300`
+    : `cd /workspace && git diff --stat && echo --- && git diff ${path ? `-- ${shellQuote(path)}` : ''} | head -300`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `git diff (${staged ? 'staged' : 'unstaged'}${path ? ` · ${path}` : ''}): exit ${result.exitCode ?? 0}.`, {
+    diff: result.stdout, stderr: result.stderr, staged, path: path || null, exitCode: result.exitCode
+  });
+}
+
+async function gitPull(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const remote = String(call.args.remote || 'origin').trim() || 'origin';
+  const branch = typeof call.args.branch === 'string' ? call.args.branch.trim() : '';
+  const cmd = `cd /workspace && git pull ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  const result = await runControlledWorkerCommand(ctx, cmd, '.', 30000);
+  return ok(call, `git pull desde ${remote}${branch ? `/${branch}` : ''}: exit ${result.exitCode ?? 0}.`, {
+    output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
+  });
+}
+
+async function gitPushBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const remote = String(call.args.remote || 'origin').trim() || 'origin';
+  const branch = String(call.args.branch || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!confirmed) {
+    return confirm(call, `¿Hacer git push${branch ? ` de la rama "${branch}"` : ''} hacia ${remote}?`, { remote, branch });
+  }
+  const cmd = `cd /workspace && git push ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  const result = await runControlledWorkerCommand(ctx, cmd, '.', 30000);
+  return ok(call, `git push hacia ${remote}${branch ? `/${branch}` : ''}: exit ${result.exitCode ?? 0}.`, {
+    output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
+  });
+}
+
+async function gitCreateBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const branch = String(call.args.branch || '').trim();
+  if (!branch) throw new Error('branch es requerido');
+  if (!/^[A-Za-z0-9_./-]+$/.test(branch)) throw new Error('Nombre de branch inválido');
+  const cmd = `cd /workspace && git checkout -b ${shellQuote(branch)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `git checkout -b ${branch}: exit ${result.exitCode ?? 0}.`, {
+    branch, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
+  });
+}
+
+async function gitCheckout(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const target = String(call.args.target || '').trim();
+  if (!target) throw new Error('target (branch/commit) es requerido');
+  if (!/^[A-Za-z0-9_./-]+$/.test(target)) throw new Error('target inválido');
+  const cmd = `cd /workspace && git checkout ${shellQuote(target)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `git checkout ${target}: exit ${result.exitCode ?? 0}.`, {
+    target, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
+  });
+}
+
+async function gitRevertCommit(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const sha = String(call.args.sha || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!sha) throw new Error('sha es requerido');
+  if (!/^[a-f0-9]{4,40}$/.test(sha)) throw new Error('sha hexadecimal inválido');
+  if (!confirmed) {
+    return confirm(call, `¿Revertir el commit ${sha} (creará un nuevo commit que deshace ese)?`, { sha });
+  }
+  const cmd = `cd /workspace && git revert --no-edit ${shellQuote(sha)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `git revert ${sha}: exit ${result.exitCode ?? 0}.`, {
+    sha, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
+  });
+}
+
+async function readWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const path = String(call.args.path || '').trim();
+  const maxBytes = typeof call.args.maxBytes === 'number' ? Math.min(Math.max(call.args.maxBytes, 256), 200_000) : 50_000;
+  if (!path) throw new Error('path es requerido');
+  if (path.includes('..')) throw new Error('path traversal no permitido');
+  const cmd = `cd /workspace && head -c ${maxBytes} ${shellQuote(path)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd, '.', 8000, maxBytes + 200);
+  if (result.exitCode !== 0) {
+    return ok(call, `No se pudo leer ${path}: ${result.stderr.slice(0, 200)}`, {
+      path, exitCode: result.exitCode, stderr: result.stderr
+    });
+  }
+  return ok(call, `Leí ${result.stdout.length} bytes de /workspace/${path}.`, {
+    path, content: result.stdout, bytesRead: result.stdout.length
+  });
+}
+
+async function writeWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const path = String(call.args.path || '').trim();
+  const content = String(call.args.content ?? '');
+  const confirmed = call.args.confirmed === true;
+  if (!path) throw new Error('path es requerido');
+  if (path.includes('..')) throw new Error('path traversal no permitido');
+  if (content.length > 200_000) throw new Error('content > 200KB no permitido');
+  if (!confirmed) {
+    return confirm(call, `¿Escribir ${content.length} bytes a /workspace/${path}? (sobrescribe si existe)`, {
+      path, bytes: content.length, preview: content.slice(0, 200)
+    });
+  }
+  const dirname = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  const b64 = Buffer.from(content, 'utf8').toString('base64');
+  const cmd = `cd /workspace && ${dirname ? `mkdir -p ${shellQuote(dirname)} && ` : ''}echo ${shellQuote(b64)} | base64 -d > ${shellQuote(path)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd, '.', 12000);
+  if (result.exitCode !== 0) {
+    return ok(call, `Falló al escribir ${path}: ${result.stderr.slice(0, 200)}`, {
+      path, exitCode: result.exitCode, stderr: result.stderr
+    });
+  }
+  return ok(call, `Escribí ${content.length} bytes en /workspace/${path}.`, {
+    path, bytesWritten: content.length, exitCode: result.exitCode
+  });
+}
+
+async function tailWorkerLogs(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const file = String(call.args.path || '').trim();
+  const lines = typeof call.args.lines === 'number' ? Math.min(Math.max(call.args.lines, 1), 500) : 100;
+  if (!file) throw new Error('path es requerido (archivo de log)');
+  if (file.includes('..')) throw new Error('path traversal no permitido');
+  const cmd = `cd /workspace && tail -n ${lines} ${shellQuote(file)}`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `Últimas ${lines} líneas de ${file} (exit ${result.exitCode ?? 0}).`, {
+    path: file, lines, output: result.stdout, exitCode: result.exitCode
+  });
+}
+
+async function killWorkerProcess(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const pid = String(call.args.pid || '').trim();
+  const signal = String(call.args.signal || 'TERM').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!pid || !/^\d+$/.test(pid)) throw new Error('pid numérico es requerido');
+  if (!/^(TERM|KILL|HUP|INT|QUIT)$/.test(signal)) throw new Error('signal inválido (TERM|KILL|HUP|INT|QUIT)');
+  if (!confirmed) {
+    return confirm(call, `¿Enviar SIG${signal} al PID ${pid} en el worker?`, { pid, signal });
+  }
+  const cmd = `kill -${signal} ${pid}`;
+  const result = await runControlledWorkerCommand(ctx, cmd);
+  return ok(call, `kill -${signal} ${pid}: exit ${result.exitCode ?? 0}.`, {
+    pid, signal, exitCode: result.exitCode, stderr: result.stderr
+  });
+}
+
+async function restartWorker(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const confirmed = call.args.confirmed === true;
+  if (!confirmed) {
+    return confirm(call, `¿Reiniciar el worker del workspace? Pierdes sesiones de terminal activas.`, { workspaceId: ctx.workspaceId });
+  }
+  return ok(call, 'restart_worker no expone control directo desde Cloud Run; el daemon agora-host-sync de stev-server reviva containers caídos automáticamente. Si necesitas un restart inmediato, usa run_worker_command con `pkill -f /app/index.js` (el container reinicia con unless-stopped).', {
+    workspaceId: ctx.workspaceId,
+    notImplementedFully: true,
+    suggestion: 'pkill -f /app/index.js dentro del worker, o ssh al host y `docker restart edu-worker-<wsId>`'
+  });
+}
+
+async function startWorker(call: AgentToolCall, ctx: AgentExecutionContext) {
+  return ok(call, 'start_worker requiere acceso sudo al host stev-server (`edu-worker-manager add <wsId>`). El agente desde Cloud Run no tiene esa capacidad; llama al admin para que lo cree.', {
+    workspaceId: ctx.workspaceId,
+    notImplementedFully: true,
+    suggestion: 'edu-worker-manager add <wsId> en stev-server (requiere sudo)'
+  });
+}
+
 export const WORKER_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_worker_status: getWorkerStatus,
   run_worker_command: runWorkerCommand,
@@ -421,5 +585,17 @@ export const WORKER_TOOL_HANDLERS: Record<string, ToolHandler> = {
   git_status: gitStatus,
   git_log: gitLog,
   git_commit_workspace: gitCommitWorkspace,
+  git_diff: gitDiff,
+  git_pull: gitPull,
+  git_push_branch: gitPushBranch,
+  git_create_branch: gitCreateBranch,
+  git_checkout: gitCheckout,
+  git_revert_commit: gitRevertCommit,
+  read_worker_file: readWorkerFile,
+  write_worker_file: writeWorkerFile,
+  tail_worker_logs: tailWorkerLogs,
+  kill_worker_process: killWorkerProcess,
+  restart_worker: restartWorker,
+  start_worker: startWorker,
   report_debug: reportDebug
 };

@@ -234,6 +234,7 @@ export const SEMANTIC_TOOL_HANDLERS: Record<string, ToolHandler> = {
   list_concepts: listConcepts,
   define_concept: defineConcept,
   create_relation: createRelation,
+  link_concepts: createRelation,
   list_glossary_entries: listGlossaryEntries,
   search_glossary_entries: searchGlossaryEntries
 };

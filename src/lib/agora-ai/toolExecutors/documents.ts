@@ -1,7 +1,7 @@
 
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
+  ok, fail, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
   ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadWorkspaceDocuments,
   summarizeDocumentMeta, syncTextDocumentToStorage, maybeDeleteStorageObject,
   listWorkspaceSnippets, loadBoardStateIfExists, loadSemanticState,
@@ -644,6 +644,193 @@ async function createFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   }, ctx);
 }
 
+async function renameFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const fromPath = normalizeFolderPath(String(call.args.fromPath || '').trim());
+  const toName = String(call.args.toName || '').trim();
+  if (!fromPath || !toName) throw new Error('fromPath y toName son requeridos');
+  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+
+  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const folderDocs = documents.filter(d =>
+    d.type === DocumentType.Folder &&
+    normalizeFolderPath(`${d.folder ?? ''}${d.folder ? '/' : ''}${d.name ?? ''}`) === fromPath
+  );
+  const childDocs = documents.filter(d =>
+    d.type !== DocumentType.Folder && (
+      normalizeFolderPath(d.folder) === fromPath ||
+      normalizeFolderPath(d.folder).startsWith(`${fromPath}/`)
+    )
+  );
+
+  const parts = fromPath.split('/');
+  parts[parts.length - 1] = toName;
+  const newPath = normalizeFolderPath(parts.join('/'));
+
+  const batch = adminDb.batch();
+  for (const fdoc of folderDocs) {
+    batch.update(adminDb.collection('documents').doc(fdoc.id), {
+      name: toName,
+      updatedAt: FieldValue.serverTimestamp(),
+      lastUpdatedBy: ctx.uid
+    });
+  }
+  for (const child of childDocs) {
+    const oldFolder = normalizeFolderPath(child.folder);
+    const newFolder = oldFolder === fromPath ? newPath : `${newPath}${oldFolder.slice(fromPath.length)}`;
+    batch.update(adminDb.collection('documents').doc(child.id), {
+      folder: newFolder,
+      updatedAt: FieldValue.serverTimestamp(),
+      lastUpdatedBy: ctx.uid
+    });
+  }
+  await batch.commit();
+
+  return ok(call, `Renombré la carpeta "${fromPath}" → "${newPath}" (${childDocs.length} documento(s) movido(s)).`, {
+    fromPath, toPath: newPath, foldersUpdated: folderDocs.length, documentsUpdated: childDocs.length
+  }, [{ action: 'rename_folder', args: { fromPath: newPath, toName: parts[parts.length - 2] || fromPath } }]);
+}
+
+async function deleteFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const folderPath = normalizeFolderPath(String(call.args.folderPath || '').trim());
+  const confirmed = call.args.confirmed === true;
+  const cascade = call.args.cascade === true;
+  if (!folderPath) throw new Error('folderPath es requerido');
+  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+
+  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const folderDocs = documents.filter(d =>
+    d.type === DocumentType.Folder &&
+    normalizeFolderPath(`${d.folder ?? ''}${d.folder ? '/' : ''}${d.name ?? ''}`) === folderPath
+  );
+  const childDocs = documents.filter(d =>
+    d.type !== DocumentType.Folder && (
+      normalizeFolderPath(d.folder) === folderPath ||
+      normalizeFolderPath(d.folder).startsWith(`${folderPath}/`)
+    )
+  );
+
+  if (childDocs.length > 0 && !cascade) {
+    return fail(call, new Error(`La carpeta "${folderPath}" tiene ${childDocs.length} documento(s). Pasa cascade:true para borrarlos también o muévelos antes.`));
+  }
+
+  if (!confirmed) {
+    return confirm(call, `¿Confirmas eliminar la carpeta "${folderPath}"${cascade ? ` y sus ${childDocs.length} documento(s) hijos` : ''}?`, {
+      folderPath, cascade, foldersToDelete: folderDocs.length, documentsToDelete: cascade ? childDocs.length : 0
+    });
+  }
+
+  const batch = adminDb.batch();
+  for (const fdoc of folderDocs) batch.delete(adminDb.collection('documents').doc(fdoc.id));
+  if (cascade) {
+    for (const child of childDocs) batch.delete(adminDb.collection('documents').doc(child.id));
+  }
+  await batch.commit();
+
+  if (cascade) {
+    void Promise.all(childDocs.map(c => maybeDeleteStorageObject(c.storagePath, c.id))).catch(() => undefined);
+  }
+
+  return ok(call, `Eliminé la carpeta "${folderPath}"${cascade ? ` y ${childDocs.length} documento(s)` : ''}.`, {
+    folderPath, foldersDeleted: folderDocs.length, documentsDeleted: cascade ? childDocs.length : 0
+  });
+}
+
+async function listAccessibleWorkspaces(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 25, 1, 100);
+  const snap = await adminDb.collection('workspaces')
+    .where('members', 'array-contains', ctx.uid)
+    .limit(limit)
+    .get();
+  const workspaces = snap.docs.map(d => {
+    const data = d.data() as Record<string, unknown>;
+    return {
+      id: d.id,
+      name: typeof data.name === 'string' ? data.name : 'Workspace',
+      ownerId: typeof data.ownerId === 'string' ? data.ownerId : null,
+      type: typeof data.type === 'string' ? data.type : 'shared',
+      membersCount: Array.isArray(data.members) ? (data.members as unknown[]).length : 0,
+      isCurrent: d.id === ctx.workspaceId
+    };
+  });
+  return ok(call, `Tienes acceso a ${workspaces.length} workspace(s) compartido(s) (sin contar el personal).`, { workspaces });
+}
+
+async function getDocumentContentAtRevision(call: AgentToolCall, _ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  const revision = String(call.args.revision || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  return ok(call, `Las revisiones por documento aún no están persistidas en Firestore. Usa git_log + git_show del worker como historial real, o read_document para la versión actual.`, {
+    documentId, revision: revision || null,
+    notImplemented: true,
+    suggestion: 'usa git_log y los archivos en /workspace del worker'
+  });
+}
+
+async function uploadExternalUrl(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const url = String(call.args.url || '').trim();
+  const targetFolder = normalizeFolderPath(String(call.args.targetFolder || '').trim());
+  const customName = typeof call.args.name === 'string' ? call.args.name.trim() : '';
+  const confirmed = call.args.confirmed === true;
+  if (!url) throw new Error('url es requerida');
+  if (!confirmed) {
+    return confirm(call, `¿Descargar "${url}" e ingestar como documento en "${targetFolder || 'No estructurado'}"?`, {
+      url, targetFolder: targetFolder || 'No estructurado'
+    });
+  }
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error(`URL inválida: ${url}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Sólo http/https');
+  const blockedHost = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[0-1])\.|localhost$|0\.0\.0\.0$)/.test(parsed.hostname.toLowerCase());
+  if (blockedHost) throw new Error(`Host privado bloqueado: ${parsed.hostname}`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { redirect: 'follow', signal: controller.signal, headers: { 'User-Agent': 'agora-agent/1.0' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status} al descargar`);
+    const text = await res.text();
+    const truncated = text.slice(0, 2_000_000);
+    const guessedName = customName
+      || parsed.pathname.split('/').filter(Boolean).pop()
+      || `download-${Date.now()}.txt`;
+    const result = await createDocument({
+      ...call,
+      args: { title: guessedName, content: truncated, folder: targetFolder, type: DocumentType.Text }
+    }, ctx);
+    return ok(call, `Descargué ${truncated.length} bytes de ${parsed.host} y los ingresé como "${guessedName}".`, {
+      url, name: guessedName, bytesIngested: truncated.length, document: result.data
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function downloadWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const folderPath = typeof call.args.folderPath === 'string' ? normalizeFolderPath(call.args.folderPath) : undefined;
+  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const filtered = folderPath
+    ? documents.filter(d => normalizeFolderPath(d.folder) === folderPath || normalizeFolderPath(d.folder).startsWith(`${folderPath}/`))
+    : documents;
+  const textDocs = filtered.filter(d => (d.type || DocumentType.Text) !== DocumentType.Folder);
+  const manifest = textDocs.map(d => ({
+    id: d.id,
+    name: d.name || 'Sin título',
+    folder: normalizeFolderPath(d.folder),
+    type: String(d.type ?? DocumentType.Text),
+    storagePath: d.storagePath ?? null,
+    size: typeof d.size === 'number' ? d.size : (d.content?.length ?? 0),
+    updatedAt: formatTimestamp(d.updatedAt)
+  }));
+  return ok(call, `Manifiesto de ${manifest.length} documento(s)${folderPath ? ` bajo "${folderPath}"` : ''}. Para zip real usa el flujo del frontend (Exportar) — el agente expone solo el manifiesto.`, {
+    workspaceId: ctx.workspaceId,
+    folderPath: folderPath || null,
+    documentCount: manifest.length,
+    manifest: manifest.slice(0, 200),
+    notImplementedFully: true,
+    suggestion: 'Para zip binario el cliente debe llamar a /api/workspaces/:id/export'
+  });
+}
+
 export const DOCUMENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
   list_documents: listDocuments,
   list_files: listDocuments,
@@ -661,6 +848,12 @@ export const DOCUMENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
   search_documents: searchDocuments,
   list_folders: listFolders,
   create_folder: createFolder,
+  rename_folder: renameFolder,
+  delete_folder: deleteFolder,
+  list_workspaces: listAccessibleWorkspaces,
+  get_document_content_at_revision: getDocumentContentAtRevision,
+  upload_external_url: uploadExternalUrl,
+  download_workspace_bundle: downloadWorkspaceBundle,
   get_workspace_info: getWorkspaceInfo,
   inspect_workspace: inspectWorkspace,
   search_workspace: searchWorkspace,

@@ -732,6 +732,497 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: 'rename_folder',
+    description: 'Renombra una carpeta en el workspace y actualiza el folder de TODOS los documentos hijos en cascada. Atómico via batch. Read-write.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fromPath: { type: 'string', description: 'Path actual de la carpeta (ej. "Cursos/Filosofía").' },
+        toName: { type: 'string', description: 'Nuevo nombre del último segmento (ej. "Lógica" para renombrar a "Cursos/Lógica").' }
+      },
+      required: ['fromPath', 'toName'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_folder',
+    description: 'Elimina una carpeta. Si tiene hijos requiere cascade:true. Requiere confirmed:true. Destructivo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folderPath: { type: 'string', description: 'Path completo de la carpeta a eliminar.' },
+        cascade: { type: 'boolean', description: 'Si true, elimina también todos los documentos hijos.' },
+        confirmed: { type: 'boolean', description: 'Confirmación explícita del usuario.' }
+      },
+      required: ['folderPath'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_workspaces',
+    description: 'Lista todos los workspaces compartidos a los que el usuario tiene acceso. Útil para ver dónde más puede operar.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Máximo a devolver (1-100, default 25).' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'get_document_content_at_revision',
+    description: 'Devuelve el contenido de una revisión específica del documento. Hoy NO está implementado en Firestore (no hay versiones); devuelve sugerencia de usar git_log + git_show del worker.',
+    parameters: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string' },
+        revision: { type: 'string', description: 'Hash o índice de revisión.' }
+      },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'upload_external_url',
+    description: 'Descarga una URL pública e ingiere el contenido como documento markdown nuevo. Bloquea hosts privados/localhost. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        targetFolder: { type: 'string' },
+        name: { type: 'string', description: 'Nombre del documento. Si se omite usa el último segmento del path de la URL.' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['url'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'download_workspace_bundle',
+    description: 'Devuelve el manifiesto (lista de docs con metadata) de todo el workspace o de una carpeta. Para el zip binario el cliente debe llamar /api/workspaces/:id/export. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folderPath: { type: 'string', description: 'Si se especifica, solo incluye docs bajo ese path.' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'invite_member',
+    description: 'Añade un userId/email a la lista de invitaciones pendientes del workspace. Solo el owner puede invitar. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        userIdOrEmail: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['userIdOrEmail'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'remove_member',
+    description: 'Quita un miembro del workspace (no puede ser el owner). Solo el owner puede ejecutar. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        userId: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['userId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'change_workspace_settings',
+    description: 'Modifica name, description o visibility del workspace activo. Solo owner.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        visibility: { type: 'string', enum: ['private', 'shared'] }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'transfer_workspace_ownership',
+    description: 'Transfiere ownership a otro miembro existente. Pierdes permisos administrativos. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        newOwnerId: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['newOwnerId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_members',
+    description: 'Lista miembros del workspace activo y sus roles, además de invitaciones pendientes.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'git_diff',
+    description: 'Ejecuta git diff en el worker. Soporta path específico y staged:true para ver index. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        staged: { type: 'boolean', description: 'Si true, muestra git diff --cached.' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'git_pull',
+    description: 'git pull del worker desde el remote. Read-write (modifica filesystem del worker).',
+    parameters: {
+      type: 'object',
+      properties: {
+        remote: { type: 'string', description: 'Default: origin' },
+        branch: { type: 'string' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'git_push_branch',
+    description: 'git push del worker hacia el remote. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        remote: { type: 'string' },
+        branch: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'git_create_branch',
+    description: 'git checkout -b <branch> en el worker.',
+    parameters: {
+      type: 'object',
+      properties: { branch: { type: 'string' } },
+      required: ['branch'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'git_checkout',
+    description: 'git checkout <target> en el worker (branch o commit hash).',
+    parameters: {
+      type: 'object',
+      properties: { target: { type: 'string' } },
+      required: ['target'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'git_revert_commit',
+    description: 'Revierte un commit (crea un nuevo commit que deshace los cambios). Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sha: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['sha'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'read_worker_file',
+    description: 'Lee un archivo dentro de /workspace del worker (head -c N). Read-only. Usa para inspeccionar archivos específicos.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relativo a /workspace.' },
+        maxBytes: { type: 'number', description: '256..200000 bytes, default 50000.' }
+      },
+      required: ['path'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'write_worker_file',
+    description: 'Escribe contenido a un archivo dentro de /workspace del worker (sobrescribe). Crea directorios padre. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        content: { type: 'string' },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['path', 'content'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'tail_worker_logs',
+    description: 'Devuelve las últimas N líneas de un archivo (tail) dentro del worker. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        lines: { type: 'number', description: '1..500, default 100.' }
+      },
+      required: ['path'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'kill_worker_process',
+    description: 'Envía señal a un proceso por PID dentro del worker. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pid: { type: 'string' },
+        signal: { type: 'string', enum: ['TERM', 'KILL', 'HUP', 'INT', 'QUIT'] },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['pid'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'restart_worker',
+    description: 'Reinicia el worker del workspace. Hoy devuelve sugerencia (`pkill -f /app/index.js`) — el agente desde Cloud Run no tiene control directo sobre Docker en stev-server.',
+    parameters: { type: 'object', properties: { confirmed: { type: 'boolean' } }, additionalProperties: false }
+  },
+  {
+    name: 'start_worker',
+    description: 'Crea el worker container si no existe. Requiere sudo en stev-server (no expuesto desde Cloud Run).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'link_concepts',
+    description: 'Crea una relación entre dos conceptos del glosario semántico (alias de create_relation).',
+    parameters: {
+      type: 'object',
+      properties: {
+        sourceId: { type: 'string' },
+        targetId: { type: 'string' },
+        kind: { type: 'string', description: 'Tipo de relación (ej. is-a, depends-on).' }
+      },
+      required: ['sourceId', 'targetId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'prove_step',
+    description: 'Pide al runtime ST que pruebe una conclusión a partir de axiomas declarados en el program. Devuelve status (provable/unknown/unprovable).',
+    parameters: {
+      type: 'object',
+      properties: {
+        program: { type: 'string', description: 'Programa ST con `logic` y `axiom` declarados.' },
+        conclusion: { type: 'string', description: 'Fórmula a derivar.' },
+        fromAxioms: { type: 'array', items: { type: 'string' }, description: 'Nombres de axiomas a usar.' }
+      },
+      required: ['program', 'conclusion'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'compare_logic_profiles',
+    description: 'Evalúa la validez de una fórmula en múltiples perfiles ST a la vez para comparar. Útil para mostrar qué lógicas la consideran válida.',
+    parameters: {
+      type: 'object',
+      properties: {
+        formula: { type: 'string' },
+        profiles: { type: 'array', items: { type: 'string' }, description: 'IDs de perfiles. Si vacío usa los primeros 6.' }
+      },
+      required: ['formula'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'formalize_document_section',
+    description: 'Formaliza la sección de un documento (delimitada por un heading) usando autologic. Si no se da headingTitle formaliza el doc completo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string' },
+        headingTitle: { type: 'string' },
+        profile: { type: 'string', description: 'Perfil ST destino (default classical.propositional).' }
+      },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'bulk_create_board_cards',
+    description: 'Crea múltiples tarjetas Kanban en una sola llamada (máximo 50). Cada item del array debe tener al menos columnId y title.',
+    parameters: {
+      type: 'object',
+      properties: {
+        cards: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              columnId: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' }
+            },
+            required: ['columnId', 'title']
+          }
+        }
+      },
+      required: ['cards'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'outline_document',
+    description: 'Devuelve el esquema (headings markdown) de un documento.',
+    parameters: {
+      type: 'object',
+      properties: { documentId: { type: 'string' } },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'find_broken_links',
+    description: 'Encuentra enlaces markdown que apuntan a docs inexistentes en el workspace. Ignora URLs externas y anchors.',
+    parameters: {
+      type: 'object',
+      properties: { documentId: { type: 'string' } },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'find_duplicates',
+    description: 'Detecta documentos exactamente duplicados (mismo hash) y similares (Jaccard de shingles). minSimilarity 0.1-1, default 0.6.',
+    parameters: {
+      type: 'object',
+      properties: { minSimilarity: { type: 'number' } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'apply_snippet_to_document',
+    description: 'Inserta un snippet al inicio o al final del contenido de un documento. Requiere confirmed:true.',
+    parameters: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string' },
+        snippetId: { type: 'string' },
+        position: { type: 'string', enum: ['start', 'end', 'cursor'] },
+        confirmed: { type: 'boolean' }
+      },
+      required: ['documentId', 'snippetId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'semantic_search_workspace',
+    description: 'Búsqueda semántica vectorial. NO implementada (Agora no genera embeddings); usa search_workspace por tokens.',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'focus_document_section',
+    description: 'Pide a la UI scrollear/seleccionar una sección específica del documento abierto (por heading o por número de línea).',
+    parameters: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string' },
+        headingTitle: { type: 'string' },
+        line: { type: 'number' }
+      },
+      required: ['documentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'prompt_user_choice',
+    description: 'Presenta una pregunta con N opciones (2-8) al usuario y espera su respuesta antes de continuar.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string' },
+        choices: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['question', 'choices'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'show_diff_to_user',
+    description: 'Muestra al usuario un diff before→after y le pide confirmar antes de aplicar el cambio. Útil antes de modificaciones masivas.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        before: { type: 'string' },
+        after: { type: 'string' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'report_status_to_user',
+    description: 'Envía un status persistente al usuario ("Estoy haciendo X de Y, voy en Z%"). Útil en operaciones largas.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string' },
+        detail: { type: 'string' }
+      },
+      required: ['status'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_recent_actions',
+    description: 'Devuelve las últimas N tools ejecutadas por el agente para este user/workspace, leídas del audit log.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' },
+        sinceMs: { type: 'number', description: 'Timestamp ms desde el cual filtrar.' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'get_agent_audit_log',
+    description: 'Audit log persistido del agente. Filtrable por tool name.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' },
+        tool: { type: 'string' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'get_subscription_status',
+    description: 'Plan actual del user (free, pro, ...) y datos de la suscripción si existe.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'list_quota',
+    description: 'Cuotas informativas: documentCount, workspacesAccessible, storageBytesUsed.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'get_workspace_quota_detail',
+    description: 'Detalle del workspace activo (name, type, plan).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
   }
 ];
 
