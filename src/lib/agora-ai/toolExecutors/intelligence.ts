@@ -371,6 +371,55 @@ async function applySnippetToDocumentTool(call: AgentToolCall, ctx: AgentExecuti
   }, [{ action: 'update_document', args: { documentId: doc.id, content: previousContent, confirmed: true } }]);
 }
 
+async function extractTextFromPdf(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const isPdf = (doc.mimeType || '').toLowerCase().includes('pdf') || (doc.name || '').toLowerCase().endsWith('.pdf');
+  if (!isPdf) throw new Error(`El documento "${doc.name || 'Sin título'}" no parece un PDF (mimeType=${doc.mimeType || 'desconocido'})`);
+  if (!doc.storagePath) {
+    return ok(call, `El PDF "${doc.name}" no tiene storagePath; probablemente fue subido como text fallback.`, { documentId, notImplementedFully: true });
+  }
+  const { getObjectBuffer } = await import('@/lib/nas-storage');
+  const buf = await getObjectBuffer(doc.storagePath);
+  if (!buf) throw new Error('No se pudo descargar el PDF de MinIO');
+  const pdfParseModule = await import('pdf-parse');
+  const pdfParse = (pdfParseModule as { default?: (data: Buffer) => Promise<{ text?: string; numpages?: number }> }).default
+    ?? (pdfParseModule as unknown as (data: Buffer) => Promise<{ text?: string; numpages?: number }>);
+  const result = await pdfParse(buf);
+  const text = (result.text || '').slice(0, 200_000);
+  return ok(call, `Extraje texto del PDF "${doc.name}" (${result.numpages || '?'} páginas, ${text.length} chars).`, {
+    document: { id: doc.id, name: doc.name },
+    pages: result.numpages || null,
+    text
+  });
+}
+
+async function lintStDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const hydrated = await loadDocumentFullContent(doc);
+  if (!hydrated.content.trim()) {
+    return ok(call, `"${doc.name || 'Sin título'}" está vacío.`, { findings: [] });
+  }
+  const stLib = await import('@/lib/st-api');
+  const { collectSTDiagnostics } = await import('@/lib/st-execution');
+  try {
+    const result = stLib.evaluate(hydrated.content);
+    const diagnostics = collectSTDiagnostics(result);
+    return ok(call, `Lint ST "${doc.name}": ${diagnostics.length} diagnóstico(s).`, {
+      document: { id: doc.id, name: doc.name || 'Sin título' },
+      diagnostics,
+      programOk: result.ok
+    });
+  } catch (error) {
+    return ok(call, `Falló al ejecutar el ST runtime: ${error instanceof Error ? error.message : String(error)}`, {
+      documentId, parseError: true
+    });
+  }
+}
+
 async function semanticSearchWorkspaceStub(call: AgentToolCall, _ctx: AgentExecutionContext) {
   return ok(call, 'Búsqueda semántica vectorial no implementada — Agora aún no genera embeddings de documentos. Usa `search_workspace` para búsqueda por tokens; añadir embeddings requiere OpenAI/Gemini embeddings + vector store (decisión de producto).', {
     notImplementedFully: true,
@@ -388,5 +437,7 @@ export const INTELLIGENCE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   find_broken_links: findBrokenLinksTool,
   find_duplicates: findDuplicatesTool,
   apply_snippet_to_document: applySnippetToDocumentTool,
+  extract_text_from_pdf: extractTextFromPdf,
+  lint_st_document: lintStDocument,
   semantic_search_workspace: semanticSearchWorkspaceStub
 };

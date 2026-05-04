@@ -11,6 +11,8 @@ import { INTELLIGENCE_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/intelli
 import { ADMIN_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/admin';
 import { UI_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/ui';
 import { OBSERVABILITY_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/observability';
+import { FORGEJO_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/git';
+import { SUBSCRIPTION_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/subscription';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -24,7 +26,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   ...INTELLIGENCE_TOOL_HANDLERS,
   ...ADMIN_TOOL_HANDLERS,
   ...UI_TOOL_HANDLERS,
-  ...OBSERVABILITY_TOOL_HANDLERS
+  ...OBSERVABILITY_TOOL_HANDLERS,
+  ...FORGEJO_TOOL_HANDLERS,
+  ...SUBSCRIPTION_TOOL_HANDLERS
 };
 
 export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionContext): Promise<AgentToolExecutionResult> {

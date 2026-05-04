@@ -8,7 +8,7 @@ import {
 } from '@/lib/semantic/workspace-state';
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp,
+  ok, confirm, clamp,
   ensureWorkspaceAccess,
   adminDb, FieldValue, resolveSemanticDocId, normalizeLookupKey
 } from './shared';
@@ -229,6 +229,44 @@ async function searchGlossaryEntries(call: AgentToolCall, ctx: AgentExecutionCon
   return listConcepts({ ...call, name: 'list_concepts' }, ctx);
 }
 
+async function findOrphanedConcepts(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const state = await loadSemanticState(ctx);
+  const linkedConceptIds = new Set<string>();
+  for (const r of state.relations) {
+    if (r.conceptId) linkedConceptIds.add(String(r.conceptId));
+  }
+  const orphans = state.concepts
+    .filter(c => !linkedConceptIds.has(String(c.id)))
+    .map(c => ({ id: c.id, title: c.title }));
+  return ok(call, `${orphans.length} concepto(s) huérfanos (sin relaciones).`, { orphans });
+}
+
+async function mergeConcepts(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const fromId = String(call.args.fromId || '').trim();
+  const intoId = String(call.args.intoId || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!fromId || !intoId) throw new Error('fromId e intoId son requeridos');
+  if (fromId === intoId) throw new Error('fromId y intoId deben ser distintos');
+  const state = await loadSemanticState(ctx);
+  const from = state.concepts.find(c => String(c.id) === fromId);
+  const into = state.concepts.find(c => String(c.id) === intoId);
+  if (!from || !into) throw new Error('Conceptos no encontrados');
+  if (!confirmed) {
+    return confirm(call, `¿Fusionar "${from.title}" → "${into.title}"? Las relaciones de ${fromId} se redirigen a ${intoId} y el concepto origen se elimina.`, { fromId, intoId });
+  }
+  const newRelations = state.relations.map(r => ({
+    ...r,
+    conceptId: r.conceptId === fromId ? intoId : r.conceptId,
+    conceptTitle: r.conceptId === fromId ? into.title : r.conceptTitle
+  }));
+  const newConcepts = state.concepts.filter(c => String(c.id) !== fromId);
+  await saveSemanticState(ctx, { ...state, concepts: newConcepts, relations: newRelations });
+  const reassigned = state.relations.filter(r => r.conceptId === fromId).length;
+  return ok(call, `Fusioné "${from.title}" en "${into.title}" (${reassigned} relación(es) reasignadas).`, {
+    fromId, intoId
+  });
+}
+
 export const SEMANTIC_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_semantic_state: getSemanticState,
   list_concepts: listConcepts,
@@ -236,5 +274,7 @@ export const SEMANTIC_TOOL_HANDLERS: Record<string, ToolHandler> = {
   create_relation: createRelation,
   link_concepts: createRelation,
   list_glossary_entries: listGlossaryEntries,
-  search_glossary_entries: searchGlossaryEntries
+  search_glossary_entries: searchGlossaryEntries,
+  find_orphaned_concepts: findOrphanedConcepts,
+  merge_concepts: mergeConcepts
 };

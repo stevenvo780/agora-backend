@@ -339,6 +339,24 @@ async function bulkCreateBoardCards(call: AgentToolCall, ctx: AgentExecutionCont
   }, created.length ? [{ action: 'rollback_bulk_cards', args: { cardIds: created.map(c => c.id) } }] : []);
 }
 
+async function archiveBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const cardId = String(call.args.cardId || '').trim();
+  const archived = call.args.archived !== false;
+  if (!cardId) throw new Error('cardId es requerido');
+  const boardRef = await ensureBoardRef(ctx);
+  const card = await resolveBoardCard(boardRef, cardId);
+  await boardRef.collection('cards').doc(card.id).update({
+    archived,
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  await boardRef.set({ updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  return ok(call, archived
+    ? `Archivé la tarjeta "${card.title || 'Sin título'}".`
+    : `Desarchivé la tarjeta "${card.title || 'Sin título'}".`, {
+    cardId: card.id, archived
+  }, [{ action: 'archive_board_card', args: { cardId: card.id, archived: !archived } }]);
+}
+
 export const BOARD_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_board: getBoard,
   create_board_column: createBoardColumn,
@@ -349,6 +367,7 @@ export const BOARD_TOOL_HANDLERS: Record<string, ToolHandler> = {
   move_board_card: moveBoardCard,
   delete_board_card: deleteBoardCard,
   bulk_create_board_cards: bulkCreateBoardCards,
+  archive_board_card: archiveBoardCard,
   restore_board_card: restoreBoardCard,
   restore_board_column: restoreBoardColumn,
   extract_pending_tasks: extractPendingTasks

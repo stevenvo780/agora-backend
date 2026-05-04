@@ -117,10 +117,47 @@ async function listMembers(call: AgentToolCall, ctx: AgentExecutionContext) {
   });
 }
 
+async function acceptInvite(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const targetWorkspace = String(call.args.workspaceId || ctx.workspaceId || '').trim();
+  if (!targetWorkspace || isPersonalWorkspaceId(targetWorkspace)) throw new Error('workspaceId compartido es requerido');
+  const wsRef = adminDb.collection('workspaces').doc(targetWorkspace);
+  const snap = await wsRef.get();
+  if (!snap.exists) throw new Error('Workspace no encontrado');
+  const data = snap.data() as Record<string, unknown>;
+  const pending = Array.isArray(data.pendingInvites) ? data.pendingInvites as string[] : [];
+  const userSnap = await adminDb.collection('users').doc(ctx.uid).get();
+  const userData = userSnap.data() as Record<string, unknown> | undefined;
+  const email = typeof userData?.email === 'string' ? userData.email : null;
+  const isInvited = pending.includes(ctx.uid) || (email && pending.includes(email));
+  if (!isInvited) throw new Error(`No estás invitado a este workspace (uid=${ctx.uid}, email=${email})`);
+  await wsRef.update({
+    members: FieldValue.arrayUnion(ctx.uid),
+    pendingInvites: FieldValue.arrayRemove(ctx.uid, ...(email ? [email] : [])),
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  return ok(call, `Acepté la invitación al workspace "${data.name || targetWorkspace}".`, { workspaceId: targetWorkspace });
+}
+
+async function declineInvite(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const targetWorkspace = String(call.args.workspaceId || ctx.workspaceId || '').trim();
+  if (!targetWorkspace || isPersonalWorkspaceId(targetWorkspace)) throw new Error('workspaceId compartido es requerido');
+  const wsRef = adminDb.collection('workspaces').doc(targetWorkspace);
+  const userSnap = await adminDb.collection('users').doc(ctx.uid).get();
+  const userData = userSnap.data() as Record<string, unknown> | undefined;
+  const email = typeof userData?.email === 'string' ? userData.email : null;
+  await wsRef.update({
+    pendingInvites: FieldValue.arrayRemove(ctx.uid, ...(email ? [email] : [])),
+    updatedAt: FieldValue.serverTimestamp()
+  });
+  return ok(call, `Decliné la invitación al workspace ${targetWorkspace}.`, { workspaceId: targetWorkspace });
+}
+
 export const ADMIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
   invite_member: inviteMember,
   remove_member: removeMember,
   change_workspace_settings: changeWorkspaceSettings,
   transfer_workspace_ownership: transferWorkspaceOwnership,
-  list_members: listMembers
+  list_members: listMembers,
+  accept_invite: acceptInvite,
+  decline_invite: declineInvite
 };

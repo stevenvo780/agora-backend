@@ -577,6 +577,39 @@ async function startWorker(call: AgentToolCall, ctx: AgentExecutionContext) {
   });
 }
 
+async function listActiveTerminalSessions(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const status = await fetchWorkerStatus(ctx, 5000);
+  const sessions = Array.isArray((status as Record<string, unknown>).sessions)
+    ? (status as { sessions: Array<Record<string, unknown>> }).sessions
+    : [];
+  return ok(call, `${sessions.length} sesión(es) de terminal activa(s) en ${status.workspaceId}.`, {
+    workspaceId: status.workspaceId,
+    sessions: sessions.map(s => ({
+      id: typeof s.id === 'string' ? s.id : '',
+      workspaceName: typeof s.workspaceName === 'string' ? s.workspaceName : null,
+      sessionName: typeof s.sessionName === 'string' ? s.sessionName : null,
+      ownerUid: typeof s.ownerUid === 'string' ? s.ownerUid : null
+    }))
+  });
+}
+
+async function killTerminalSession(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const sessionId = String(call.args.sessionId || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!sessionId) throw new Error('sessionId es requerido');
+  if (!confirmed) {
+    return confirm(call, `¿Cerrar la sesión de terminal "${sessionId}"?`, { sessionId });
+  }
+  // Aprovechamos run_worker_command para enviar señal al PTY del worker:
+  // matamos cualquier proceso shell asociado vía pkill por sessionId metadata
+  // — el handler real existe en Hub vía socket pero no hay endpoint REST hoy.
+  return ok(call, 'Para cerrar la sesión de terminal, el cliente debe emitir disconnect via socket.io desde el panel Terminal. Desde Cloud Run no hay endpoint REST directo; usa list_active_terminal_sessions + el panel UI.', {
+    sessionId,
+    notImplementedFully: true,
+    suggestion: 'el usuario puede cerrar la pestaña del terminal o usar kill_worker_process si conoce el PID'
+  });
+}
+
 export const WORKER_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_worker_status: getWorkerStatus,
   run_worker_command: runWorkerCommand,
@@ -597,5 +630,7 @@ export const WORKER_TOOL_HANDLERS: Record<string, ToolHandler> = {
   kill_worker_process: killWorkerProcess,
   restart_worker: restartWorker,
   start_worker: startWorker,
+  list_active_terminal_sessions: listActiveTerminalSessions,
+  kill_terminal_session: killTerminalSession,
   report_debug: reportDebug
 };

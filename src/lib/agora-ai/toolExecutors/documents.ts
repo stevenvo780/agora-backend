@@ -636,6 +636,188 @@ async function listFolders(call: AgentToolCall, ctx: AgentExecutionContext) {
   );
 }
 
+async function duplicateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  const newName = typeof call.args.newName === 'string' ? call.args.newName.trim() : '';
+  const targetFolder = typeof call.args.targetFolder === 'string' ? normalizeFolderPath(call.args.targetFolder) : undefined;
+  if (!documentId) throw new Error('documentId es requerido');
+  const original = await fetchDocumentForUser(documentId, ctx);
+  const hydrated = await loadDocumentFullContent(original);
+  const cloneTitle = newName || `${original.name || 'Sin título'} (copia)`;
+  return createDocument({
+    ...call,
+    args: {
+      title: cloneTitle,
+      content: hydrated.content,
+      folder: targetFolder ?? normalizeFolderPath(original.folder),
+      type: original.type || DocumentType.Text
+    }
+  }, ctx);
+}
+
+async function getStorageUsage(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  let totalBytes = 0;
+  let textBytes = 0;
+  let blobBytes = 0;
+  let count = 0;
+  for (const doc of docs) {
+    if ((doc.type ?? DocumentType.Text) === DocumentType.Folder) continue;
+    count += 1;
+    const size = typeof doc.size === 'number' ? doc.size : (doc.content || '').length;
+    totalBytes += size;
+    if (doc.storagePath) blobBytes += size; else textBytes += size;
+  }
+  return ok(call, `Storage: ${count} doc(s), ${(totalBytes / 1024).toFixed(1)} KB total (${(blobBytes / 1024).toFixed(1)} KB en MinIO, ${(textBytes / 1024).toFixed(1)} KB en Firestore cache).`, {
+    workspaceId: ctx.workspaceId,
+    documentCount: count,
+    totalBytes,
+    minioBytes: blobBytes,
+    firestoreBytes: textBytes
+  });
+}
+
+async function findLargeDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const minBytes = typeof call.args.minBytes === 'number' ? call.args.minBytes : 100_000;
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 50);
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const candidates = docs
+    .filter(d => (d.type ?? DocumentType.Text) !== DocumentType.Folder)
+    .map(d => ({
+      id: d.id,
+      name: d.name || 'Sin título',
+      folder: normalizeFolderPath(d.folder),
+      bytes: typeof d.size === 'number' ? d.size : (d.content || '').length,
+      mimeType: d.mimeType || null,
+      hasStorage: Boolean(d.storagePath)
+    }))
+    .filter(d => d.bytes >= minBytes)
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, limit);
+  return ok(call, `${candidates.length} documento(s) ≥ ${minBytes} bytes.`, { documents: candidates, minBytes });
+}
+
+async function listRecentActivity(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const sinceHours = clamp(typeof call.args.sinceHours === 'number' ? call.args.sinceHours : 24, 1, 720);
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 50);
+  const sinceMs = Date.now() - sinceHours * 3600 * 1000;
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const recent = docs
+    .filter(d => (d.type ?? DocumentType.Text) !== DocumentType.Folder)
+    .map(d => ({ doc: d, ts: toEpoch(d.updatedAt) }))
+    .filter(({ ts }) => ts >= sinceMs)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, limit)
+    .map(({ doc, ts }) => ({
+      id: doc.id,
+      name: doc.name || 'Sin título',
+      folder: normalizeFolderPath(doc.folder),
+      updatedAtMs: ts,
+      updatedAtIso: ts > 0 ? new Date(ts).toISOString() : null
+    }));
+  return ok(call, `${recent.length} documento(s) editados en las últimas ${sinceHours}h.`, { documents: recent, sinceHours });
+}
+
+async function listFavorites(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const userSnap = await adminDb.collection('users').doc(ctx.uid).get();
+  const data = userSnap.data() as Record<string, unknown> | undefined;
+  const favoritesByWorkspace = data?.favoritesByWorkspace as Record<string, string[]> | undefined;
+  const favoriteIds = Array.isArray(favoritesByWorkspace?.[ctx.workspaceId])
+    ? favoritesByWorkspace![ctx.workspaceId]!
+    : [];
+  if (favoriteIds.length === 0) {
+    return ok(call, 'No hay favoritos en este workspace.', { favorites: [] });
+  }
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const favorites = favoriteIds
+    .map(id => docs.find(d => d.id === id))
+    .filter((d): d is StoredDocument => Boolean(d))
+    .map(d => ({ id: d.id, name: d.name || 'Sin título', folder: normalizeFolderPath(d.folder) }));
+  return ok(call, `${favorites.length} favorito(s) en este workspace.`, { favorites });
+}
+
+async function addFavorite(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  await adminDb.collection('users').doc(ctx.uid).set({
+    favoritesByWorkspace: { [ctx.workspaceId]: FieldValue.arrayUnion(doc.id) }
+  }, { merge: true });
+  return ok(call, `Añadido "${doc.name || 'Sin título'}" a favoritos.`, { documentId: doc.id }, [
+    { action: 'remove_favorite', args: { documentId: doc.id } }
+  ]);
+}
+
+async function removeFavorite(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  await adminDb.collection('users').doc(ctx.uid).set({
+    favoritesByWorkspace: { [ctx.workspaceId]: FieldValue.arrayRemove(documentId) }
+  }, { merge: true });
+  return ok(call, `Removido ${documentId} de favoritos.`, { documentId }, [
+    { action: 'add_favorite', args: { documentId } }
+  ]);
+}
+
+interface LintFinding {
+  ruleId: string;
+  severity: 'error' | 'warning' | 'info';
+  line: number;
+  message: string;
+}
+
+function lintMarkdownContent(content: string): LintFinding[] {
+  const findings: LintFinding[] = [];
+  const lines = content.split('\n');
+  let inFence = false;
+  let fenceMarker = '';
+  let prevHeading = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const fenceMatch = line.match(/^(```|~~~)/);
+    if (fenceMatch?.[1]) {
+      const marker = fenceMatch[1];
+      if (!inFence) { inFence = true; fenceMarker = marker; prevHeading = false; continue; }
+      if (line.startsWith(fenceMarker)) { inFence = false; fenceMarker = ''; prevHeading = false; continue; }
+    }
+    if (inFence) { prevHeading = false; continue; }
+    if (line.length > 220) findings.push({ ruleId: 'line-too-long', severity: 'info', line: i + 1, message: `Línea de ${line.length} caracteres (>220)` });
+    if (/[ \t]+$/.test(line)) findings.push({ ruleId: 'trailing-whitespace', severity: 'info', line: i + 1, message: 'Espacio en blanco al final' });
+    if (/^\t+/.test(line) && /^ +/.test(lines[i - 1] ?? '')) findings.push({ ruleId: 'mixed-indent', severity: 'warning', line: i + 1, message: 'Indent mezclado tabs/espacios' });
+    const hMatch = line.match(/^(#{1,6})\s*$/);
+    if (hMatch) findings.push({ ruleId: 'heading-empty', severity: 'warning', line: i + 1, message: 'Heading sin texto' });
+    const hWithText = line.match(/^(#{1,6})\s+(.+)$/);
+    if (hWithText) {
+      if (prevHeading) findings.push({ ruleId: 'consecutive-headings', severity: 'info', line: i + 1, message: 'Heading directamente después de otro heading (sin contenido entre medio)' });
+      prevHeading = true;
+    } else if (line.trim()) {
+      prevHeading = false;
+    }
+    if (/^[-*+]\s*\[\s\]/.test(line)) {
+      // todo no terminado, OK
+    }
+  }
+  if (content.length > 0 && !content.endsWith('\n')) {
+    findings.push({ ruleId: 'no-trailing-newline', severity: 'info', line: lines.length, message: 'Archivo sin newline final' });
+  }
+  return findings;
+}
+
+async function lintDocumentTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const documentId = String(call.args.documentId || '').trim();
+  if (!documentId) throw new Error('documentId es requerido');
+  const doc = await fetchDocumentForUser(documentId, ctx);
+  const hydrated = await loadDocumentFullContent(doc);
+  const findings = lintMarkdownContent(hydrated.content);
+  const counts = findings.reduce<Record<string, number>>((acc, f) => { acc[f.severity] = (acc[f.severity] ?? 0) + 1; return acc; }, {});
+  return ok(call, `Lint "${doc.name || 'Sin título'}": ${findings.length} hallazgo(s) (${counts.error || 0} error, ${counts.warning || 0} warning, ${counts.info || 0} info).`, {
+    document: { id: doc.id, name: doc.name || 'Sin título' },
+    findings,
+    counts,
+    note: 'Linter ligero del agente (~7 reglas regex). Para las 53 reglas completas usa el panel Problemas (open_app_panel problems) que corre el linter del cliente.'
+  });
+}
+
 async function getWorkspaceInfo(call: AgentToolCall, ctx: AgentExecutionContext) {
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
   const workspace = await fetchWorkspaceDoc(ctx.workspaceId, ctx.uid);
@@ -879,6 +1061,14 @@ export const DOCUMENT_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_document_content_at_revision: getDocumentContentAtRevision,
   upload_external_url: uploadExternalUrl,
   download_workspace_bundle: downloadWorkspaceBundle,
+  duplicate_document: duplicateDocument,
+  get_storage_usage: getStorageUsage,
+  find_large_documents: findLargeDocuments,
+  list_recent_workspace_activity: listRecentActivity,
+  list_favorites: listFavorites,
+  add_favorite: addFavorite,
+  remove_favorite: removeFavorite,
+  lint_document: lintDocumentTool,
   get_workspace_info: getWorkspaceInfo,
   inspect_workspace: inspectWorkspace,
   search_workspace: searchWorkspace,

@@ -1,8 +1,8 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp, excerpt,
-  ensureWorkspaceAccess, listWorkspaceSnippets, fetchSnippetForUser,
-  adminDb, FieldValue, isPersonalWorkspaceId
+  ok, confirm, clamp, excerpt,
+  ensureWorkspaceAccess, listWorkspaceSnippets, fetchSnippetForUser, loadWorkspaceDocuments,
+  adminDb, FieldValue, isPersonalWorkspaceId, MAX_DOC_SCAN
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -134,11 +134,88 @@ async function updateSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
   }, [{ action: 'update_snippet', args: { snippetId: snippet.id, ...previous } }]);
 }
 
+async function importSnippetsFromUrl(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const url = String(call.args.url || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!url) throw new Error('url es requerida');
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error(`URL inválida: ${url}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Solo http/https');
+  if (!confirmed) {
+    return confirm(call, `¿Importar snippets desde ${parsed.host}? Devuelve un array JSON [{title, markdown, category?, description?}]`, { url });
+  }
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json().catch(() => null);
+  if (!Array.isArray(json)) throw new Error('Esperaba un array JSON');
+  const items = json.slice(0, 50);
+  const created: Array<{ id: string; title: string }> = [];
+  const failures: Array<{ index: number; error: string }> = [];
+  for (let i = 0; i < items.length; i += 1) {
+    try {
+      const item = items[i] as Record<string, unknown>;
+      const result = await createSnippet({ ...call, id: `${call.id}.${i}`, args: item }, ctx);
+      const data = (result.data as Record<string, unknown> | undefined)?.snippet as { id?: string; title?: string } | undefined;
+      if (data?.id) created.push({ id: data.id, title: data.title || 'Sin título' });
+    } catch (error) {
+      failures.push({ index: i, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return ok(call, `Importé ${created.length}/${items.length} snippet(s) desde ${parsed.host}.`, { url, created, failures });
+}
+
+async function listDictionaryWords(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const userSnap = await adminDb.collection('users').doc(ctx.uid).get();
+  const data = userSnap.data() as Record<string, unknown> | undefined;
+  const words = Array.isArray(data?.linterDictionary) ? data!.linterDictionary as string[] : [];
+  return ok(call, `${words.length} palabra(s) en tu diccionario personal del linter.`, { words });
+}
+
+async function addWordToDictionary(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const word = String(call.args.word || '').trim();
+  if (!word || word.length > 100) throw new Error('word es requerida (1..100 chars)');
+  await adminDb.collection('users').doc(ctx.uid).set({
+    linterDictionary: FieldValue.arrayUnion(word)
+  }, { merge: true });
+  return ok(call, `Añadí "${word}" al diccionario personal del linter.`, { word }, [
+    { action: 'remove_word_from_dictionary', args: { word } }
+  ]);
+}
+
+async function removeWordFromDictionary(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const word = String(call.args.word || '').trim();
+  if (!word) throw new Error('word es requerida');
+  await adminDb.collection('users').doc(ctx.uid).set({
+    linterDictionary: FieldValue.arrayRemove(word)
+  }, { merge: true });
+  return ok(call, `Removí "${word}" del diccionario.`, { word });
+}
+
+async function findUnusedSnippets(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const snippets = await listWorkspaceSnippets(ctx);
+  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const allDocsContent = docs.map(d => (d.content || '').toLowerCase()).join('\n');
+  const unused = snippets
+    .filter(s => {
+      const tag = (s.title || '').toLowerCase();
+      if (!tag) return true;
+      return !allDocsContent.includes(tag);
+    })
+    .slice(0, 50)
+    .map(s => ({ id: s.id, title: s.title || 'Sin título', category: s.category || null }));
+  return ok(call, `${unused.length} snippet(s) que parecen no usarse en ningún doc del workspace.`, { unused });
+}
+
 export const SNIPPET_TOOL_HANDLERS: Record<string, ToolHandler> = {
   list_snippets: listSnippets,
   create_snippet: createSnippet,
   read_snippet: readSnippet,
   search_snippets: searchSnippets,
   update_snippet: updateSnippet,
-  delete_snippet: deleteSnippet
+  delete_snippet: deleteSnippet,
+  import_snippets_from_url: importSnippetsFromUrl,
+  find_unused_snippets: findUnusedSnippets,
+  list_dictionary_words: listDictionaryWords,
+  add_word_to_dictionary: addWordToDictionary,
+  remove_word_from_dictionary: removeWordFromDictionary
 };
