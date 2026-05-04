@@ -160,11 +160,11 @@ export const parseUnifiedDiff = (raw: string): { files: DiffFile[]; truncated: b
     }
     // Cabecera: extraer paths.
     const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    let aPath = m?.[1] ?? '';
+    const aPath = m?.[1] ?? '';
     let bPath = m?.[2] ?? '';
     let status: DiffFile['status'] = 'modified';
     let oldPath: string | undefined;
-    let buf: string[] = [line];
+    const buf: string[] = [line];
     cursor++;
     let additions = 0;
     let deletions = 0;

@@ -158,7 +158,7 @@ export function setCachedToolResult(call: AgentToolCall, ctx: AgentExecutionCont
   }
 }
 
-async function spawnSubagent(call: AgentToolCall, ctx: AgentExecutionContext) {
+async function spawnSubagent(call: AgentToolCall, _ctx: AgentExecutionContext) {
   const task = String(call.args.task || '').trim();
   const scope = String(call.args.scope || 'read-only').trim();
   const maxIterations = clamp(typeof call.args.maxIterations === 'number' ? call.args.maxIterations : 5, 1, 15);

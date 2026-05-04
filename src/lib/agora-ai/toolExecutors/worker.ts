@@ -593,7 +593,7 @@ async function listActiveTerminalSessions(call: AgentToolCall, ctx: AgentExecuti
   });
 }
 
-async function killTerminalSession(call: AgentToolCall, ctx: AgentExecutionContext) {
+async function killTerminalSession(call: AgentToolCall, _ctx: AgentExecutionContext) {
   const sessionId = String(call.args.sessionId || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!sessionId) throw new Error('sessionId es requerido');
