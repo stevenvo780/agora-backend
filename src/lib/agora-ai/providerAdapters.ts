@@ -1,6 +1,7 @@
 import { buildAgoraSystemPrompt, extractThinkingSegments } from '@/lib/agora-ai/systemPrompt';
 import { toAnthropicTools, toGeminiTools, toOpenAITools } from '@/lib/agora-ai/toolDefinitions';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
+import { isCacheableAgentTool, isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
 import type {
   AgentExecutionContext,
   AgentMode,
@@ -279,31 +280,8 @@ async function collectTextAndThinking(
  * Execute tool calls with bounded concurrency and return results in original order.
  * allSettled semantics keep one tool failure from blocking the rest.
  */
-/**
- * Tools cuya salida es idempotente dentro de un mismo turno: no modifican
- * estado y devolver el mismo resultado al modelo es seguro y ahorra latencia
- * + costo. La lista se mantiene conservadora: solo lecturas.
- */
-const READ_ONLY_TOOLS = new Set([
-  'list_documents', 'list_folders', 'read_document', 'search_documents',
-  'inspect_workspace', 'list_snippets', 'get_semantic_state',
-  'list_kanban_cards', 'list_st_definitions', 'workspace_status',
-  'get_document_metadata'
-]);
-
-/**
- * Tools destructivas: cuando el agente intenta ejecutar 2+ en un mismo
- * batch (mismo turno paralelo), exigimos confirmación explícita del user
- * para la primera y rechazamos el resto del batch.
- */
-const DESTRUCTIVE_TOOLS = new Set([
-  'delete_document', 'delete_file', 'delete_folder',
-  'overwrite_document', 'rollback_action', 'rollback_last',
-  'run_worker_command'
-]);
-
 function toolCacheKey(call: AgentToolCall): string | null {
-  if (!READ_ONLY_TOOLS.has(call.name)) return null;
+  if (!isCacheableAgentTool(call.name)) return null;
   try { return `${call.name}::${JSON.stringify(call.args ?? {})}`; }
   catch { return null; }
 }
@@ -315,7 +293,7 @@ async function executeToolsParallel(
 ): Promise<Array<{ toolCall: AgentToolCall; result: AgentToolExecutionResult }>> {
   // Salvaguarda: si el batch contiene 2+ tools destructivas, rechazamos las
   // posteriores y dejamos que la primera pida confirmación de forma natural.
-  const destructiveBatch = toolCalls.filter((c) => DESTRUCTIVE_TOOLS.has(c.name));
+  const destructiveBatch = toolCalls.filter((c) => isDestructiveAgentTool(c.name));
   const blockedDestructive = destructiveBatch.length > 1
     ? new Set(destructiveBatch.slice(1).map((c) => c.id))
     : new Set<string>();

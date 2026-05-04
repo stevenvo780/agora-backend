@@ -10,7 +10,7 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getDatabase } from 'firebase-admin/database';
-import { resolveSyncChannel, parseSyncEventPayload } from '@/lib/contracts';
+import { resolveSyncChannel, parseSyncEventPayload } from '@agora/contracts';
 
 export type SyncPingOp = 'created' | 'updated' | 'deleted' | 'refresh';
 
@@ -48,6 +48,7 @@ export const emitPing = async (ping: SyncPing): Promise<{ outboxId: string; rtdb
     folder: ping.folder ?? 'No estructurado',
     docId: ping.docId ?? null,
     timestamp: ts,
+    schemaVersion: 1,
     source: 'worker',
     scope: ping.scope,
     workspaceId: ping.workspaceId ?? null,

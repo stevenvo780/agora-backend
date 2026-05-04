@@ -23,6 +23,20 @@ type RouteEntry = {
   segmentCount: number;
 };
 
+const BARE_API_ROUTES_SUNSET = process.env.BARE_API_ROUTES_SUNSET || '2026-08-01';
+
+export const getBareApiRouteDeprecationHeaders = (
+  canonicalPath: string,
+  sunset = BARE_API_ROUTES_SUNSET
+): Record<string, string> => ({
+  Deprecation: 'true',
+  Sunset: sunset,
+  Link: `<${canonicalPath}>; rel="canonical"`
+});
+
+export const computeBareApiPath = (apiPath: string): string =>
+  apiPath.replace(/^\/api(?=\/|$)/, '') || '/';
+
 export async function mountNextStyleApiRoutes(app: Express): Promise<void> {
   const apiDir = fileURLToPath(new URL('../app/api/', import.meta.url));
   const entries = await findRouteEntries(apiDir);
@@ -36,9 +50,11 @@ export async function mountNextStyleApiRoutes(app: Express): Promise<void> {
       const wrapped = wrapHandler(handler);
       app[method.toLowerCase() as Lowercase<HttpMethod>](entry.path, wrapped);
 
-      const barePath = entry.path.replace(/^\/api(?=\/|$)/, '') || '/';
+      const barePath = computeBareApiPath(entry.path);
       if (barePath !== entry.path) {
-        app[method.toLowerCase() as Lowercase<HttpMethod>](barePath, wrapped);
+        app[method.toLowerCase() as Lowercase<HttpMethod>](barePath, wrapHandler(handler, {
+          canonicalPath: entry.path
+        }));
       }
     }
   }
@@ -46,9 +62,14 @@ export async function mountNextStyleApiRoutes(app: Express): Promise<void> {
   console.log(`[agora-backend] Mounted ${entries.length} API route files`);
 }
 
-const wrapHandler = (handler: RouteHandler) => {
+const wrapHandler = (handler: RouteHandler, options: { canonicalPath?: string } = {}) => {
   return async (req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
     try {
+      if (options.canonicalPath) {
+        for (const [name, value] of Object.entries(getBareApiRouteDeprecationHeaders(options.canonicalPath))) {
+          res.setHeader(name, value);
+        }
+      }
       const request = createWebRequest(req);
       const response = await handler(request, {
         params: Promise.resolve(req.params as Record<string, string>)

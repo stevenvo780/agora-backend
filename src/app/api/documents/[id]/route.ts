@@ -17,7 +17,8 @@ import { mockGetDoc, mockUpdateDoc, mockDeleteDoc } from '@/lib/insecure-mock-st
 import { invalidateStorageUsageCache } from '@/lib/storage-usage';
 import { isNasConfigured, putObject, moveObject, deleteObject, presignGet, getObjectBuffer } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
-import { isDotfileName } from '@/lib/contracts';
+import { parseDocumentUpdatePayload } from '@agora/contracts';
+import { isDotfileName } from '@agora/contracts';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -51,7 +52,10 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             return NextResponse.json({ error: 'NAS storage not configured' }, { status: 503 });
         }
 
-        const body = await req.json();
+        const rawBody = await req.json().catch(() => null);
+        const parsed = parseDocumentUpdatePayload(rawBody);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+        const body = parsed.value;
 
         const docRef = adminDb.collection('documents').doc(id);
         const snap = await docRef.get();
@@ -110,7 +114,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             // a menos que el cliente lo pida explícitamente (allowEmptyOverwrite=true)
             // Y sea el owner del documento. Esto previene perder docs por bug del
             // editor o request maliciosa de un colaborador.
-            const newContent: string = body.content;
+            const newContent: string = body.content ?? '';
             const allowEmpty = body.allowEmptyOverwrite === true && existingOwnerId === auth.uid;
             if (newContent.length === 0 && !allowEmpty) {
                 const existingSize = typeof existingData?.size === 'number' ? existingData.size : 0;

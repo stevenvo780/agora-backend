@@ -6,6 +6,7 @@ import type { BoardCard, BoardColumn } from '@/types/boards';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
+import { parseBoardCreatePayload, parseBoardPatchPayload, parseBoardDeletePayload } from '@agora/contracts';
 
 const DEFAULT_COLUMNS = ['Por hacer', 'En progreso', 'Hecho'];
 
@@ -176,12 +177,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { workspaceId, type } = body as { workspaceId?: string; type?: string };
-
-    if (!workspaceId) {
-      return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
-    }
+    const rawBody = await req.json().catch(() => null);
+    const parsed = parseBoardCreatePayload(rawBody);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    const { workspaceId, type } = parsed.value;
+    const body = parsed.value;
 
     const allowed = await canAccessWorkspace(workspaceId, auth.uid);
     if (!allowed) {
@@ -218,10 +218,10 @@ export async function POST(req: NextRequest) {
           columnId,
           order: typeof body.order === 'number' ? body.order : Date.now(),
           ownerId: auth.uid,
-          sourceDocId: typeof body.sourceDocId === 'string' ? body.sourceDocId : null,
-          sourceDocName: typeof body.sourceDocName === 'string' ? body.sourceDocName : null,
-          sourceFragment: typeof body.sourceFragment === 'string' ? body.sourceFragment : null,
-          sourcePath: typeof body.sourcePath === 'string' ? body.sourcePath : null,
+          sourceDocId: typeof body.sourceDocId === 'string' ? body.sourceDocId : undefined,
+          sourceDocName: typeof body.sourceDocName === 'string' ? body.sourceDocName : undefined,
+          sourceFragment: typeof body.sourceFragment === 'string' ? body.sourceFragment : undefined,
+          sourcePath: typeof body.sourcePath === 'string' ? body.sourcePath : undefined,
           createdAt: Date.now(),
           updatedAt: Date.now()
         };
@@ -290,17 +290,10 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { workspaceId, type, id, data } = body as {
-      workspaceId?: string;
-      type?: string;
-      id?: string;
-      data?: Record<string, unknown>;
-    };
-
-    if (!workspaceId || !id) {
-      return NextResponse.json({ error: 'workspaceId and id are required' }, { status: 400 });
-    }
+    const rawBody = await req.json().catch(() => null);
+    const parsed = parseBoardPatchPayload(rawBody);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    const { workspaceId, type, id, data } = parsed.value;
 
     const allowed = await canAccessWorkspace(workspaceId, auth.uid);
     if (!allowed) {
@@ -386,12 +379,10 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { workspaceId, type, id } = body as { workspaceId?: string; type?: string; id?: string };
-
-    if (!workspaceId || !id) {
-      return NextResponse.json({ error: 'workspaceId and id are required' }, { status: 400 });
-    }
+    const rawBody = await req.json().catch(() => null);
+    const parsed = parseBoardDeletePayload(rawBody);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    const { workspaceId, type, id } = parsed.value;
 
     const allowed = await canAccessWorkspace(workspaceId, auth.uid);
     if (!allowed) {

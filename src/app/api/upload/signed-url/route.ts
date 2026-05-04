@@ -13,6 +13,7 @@ import { formatStorageSize, getStorageLimitMB } from '@/types/subscription';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { getActivePlanId } from '@/app/api/payments/helpers';
 import { isNasConfigured, presignPut } from '@/lib/nas-storage';
+import { parseSignedUrlRequestPayload } from '@agora/contracts';
 
 export const runtime = 'nodejs';
 
@@ -26,23 +27,17 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
         }
 
-        const body = await req.json();
+        const rawBody = await req.json().catch(() => null);
+        const parsed = parseSignedUrlRequestPayload(rawBody);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+
         const {
             fileName,
             mimeType,
             workspaceId = PERSONAL_WORKSPACE_ID,
-            folder = 'No estructurado'
-        } = body as {
-            fileName?: string;
-            mimeType?: string;
-            workspaceId?: string;
-            folder?: string;
-            fileSize?: number;
-        };
-
-        if (!fileName || !mimeType) {
-            return NextResponse.json({ error: 'fileName and mimeType required' }, { status: 400 });
-        }
+            folder = 'No estructurado',
+            fileSize
+        } = parsed.value;
 
         if (!isPersonalWorkspaceId(workspaceId)) {
             const member = await isWorkspaceMember(workspaceId, auth.uid);
@@ -51,8 +46,7 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        const fileSize = typeof body.fileSize === 'number' ? body.fileSize : NaN;
-        if (!Number.isFinite(fileSize) || fileSize <= 0) {
+        if (fileSize <= 0) {
             return NextResponse.json({ error: 'fileSize must be a positive number' }, { status: 400 });
         }
 

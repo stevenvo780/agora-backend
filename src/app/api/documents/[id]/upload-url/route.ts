@@ -12,6 +12,7 @@ import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { getActivePlanId } from '@/app/api/payments/helpers';
 import { isNasConfigured, presignPut } from '@/lib/nas-storage';
+import { parseUploadUrlRequestPayload } from '@agora/contracts';
 
 export const runtime = 'nodejs';
 
@@ -33,13 +34,12 @@ export async function POST(req: NextRequest, context: RouteContext) {
         if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
         const { id } = await context.params;
-        const body = await req.json();
-        const mimeType = typeof body.mimeType === 'string' && body.mimeType.trim()
-            ? body.mimeType.trim()
-            : 'application/octet-stream';
-        const fileSize = typeof body.fileSize === 'number' ? body.fileSize : NaN;
+        const rawBody = await req.json().catch(() => null);
+        const parsed = parseUploadUrlRequestPayload(rawBody);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+        const { mimeType, fileSize } = parsed.value;
 
-        if (!Number.isFinite(fileSize) || fileSize < 0) {
+        if (fileSize < 0) {
             return NextResponse.json({ error: 'fileSize must be a non-negative number' }, { status: 400 });
         }
 

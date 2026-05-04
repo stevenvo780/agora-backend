@@ -5,7 +5,7 @@
  * `published: false`. Cubre el caso en que `emitPing` no pudo escribir a
  * RTDB (red caída, rule rechazo) y solo dejó el outbox.
  *
- * Protegido por CRON_SECRET (Vercel cron) o WORKER_SECRET (uso manual).
+ * Protegido por CRON_SECRET (Vercel cron o ejecución manual).
  * Pensado para ejecutarse cada 1-5 min vía vercel.json crons.
  */
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
@@ -13,7 +13,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { getDatabase } from 'firebase-admin/database';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getErrorMessage } from '@/lib/error-utils';
-import { parseOutboxRecord } from '@/lib/contracts';
+import { parseOutboxRecord } from '@agora/contracts';
 import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
@@ -26,10 +26,7 @@ const MAX_RETRIES = 5;
 export async function GET(req: NextRequest) {
     const authHeader = req.headers.get('authorization') ?? '';
     const cronSecret = env.CRON_SECRET();
-    const workerSecret = env.WORKER_SECRET();
-    const ok =
-        (cronSecret && authHeader === `Bearer ${cronSecret}`) ||
-        (workerSecret && authHeader === `Bearer ${workerSecret}`);
+    const ok = Boolean(cronSecret && authHeader === `Bearer ${cronSecret}`);
     if (!ok) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

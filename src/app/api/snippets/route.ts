@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
-import { parseSnippetCreatePayload } from '@/lib/contracts';
+import { parseSnippetCreatePayload } from '@agora/contracts';
 
 export async function GET(req: NextRequest) {
   try {

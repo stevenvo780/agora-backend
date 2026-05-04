@@ -14,7 +14,7 @@ import { verifyWorkerAuth } from '@/lib/worker-auth';
 import { presignPut, isNasConfigured } from '@/lib/nas-storage';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import { getErrorMessage } from '@/lib/error-utils';
-import { sanitizeRepoPath } from '@/lib/contracts';
+import { sanitizeRepoPath } from '@agora/contracts';
 
 const PUT_TTL = 15 * 60;
 

@@ -1,3 +1,6 @@
+import type { AgentUiCommandType, AgentUiPanel } from '@/lib/agora-ai/uiPanels';
+export type { AgentUiCommandType, AgentUiPanel } from '@/lib/agora-ai/uiPanels';
+
 export type AIProvider = 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'deepseek';
 export type AgentMode = 'chat' | 'agent';
 
@@ -161,24 +164,8 @@ export interface AgentWorkerCommandEventDetail {
   source: 'agora-ai';
 }
 
-export type AgentUiPanel =
-  | 'files'
-  | 'search'
-  | 'git'
-  | 'snippets'
-  | 'board'
-  | 'semantic'
-  | 'st'
-  | 'formalizer'
-  | 'ai'
-  | 'ai-config'
-  | 'linter-config'
-  | 'terminal'
-  | 'problems'
-  | 'settings';
-
 export interface AgentUiCommand {
-  type: 'open_panel' | 'focus_folder' | 'open_terminal' | 'open_problems' | 'open_ai_config' | 'open_linter_config';
+  type: AgentUiCommandType;
   panel?: AgentUiPanel;
   folder?: string;
 }

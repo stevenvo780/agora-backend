@@ -25,7 +25,7 @@ import { enforceStorageQuota } from '@/lib/plan-guard';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 import { emitPing } from '@/lib/nas-events';
 import { getErrorMessage } from '@/lib/error-utils';
-import { parseWorkerCommitPayload, splitRepoPath } from '@/lib/contracts';
+import { parseWorkerCommitPayload, splitRepoPath } from '@agora/contracts';
 
 const TEXT_EXT = new Set([
     '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.toml', '.ini',

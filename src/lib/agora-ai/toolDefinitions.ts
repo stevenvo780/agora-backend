@@ -1,5 +1,6 @@
 import { DocumentType } from '@/types/documents';
 import type { AgentToolDefinition } from '@/lib/agora-ai/types';
+import { AGENT_UI_PANEL_DESCRIPTION, AGENT_UI_PANELS } from '@/lib/agora-ai/uiPanels';
 
 export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   {
@@ -267,13 +268,13 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'open_app_panel',
-    description: 'Pide a la interfaz abrir o enfocar un panel de la app: files, search, git, snippets, board, semantic, st, formalizer, ai, ai-config, linter-config, terminal, problems o settings.',
+    description: `Pide a la interfaz abrir o enfocar un panel de la app: ${AGENT_UI_PANEL_DESCRIPTION}.`,
     parameters: {
       type: 'object',
       properties: {
         panel: {
           type: 'string',
-          enum: ['files', 'search', 'git', 'snippets', 'board', 'semantic', 'st', 'formalizer', 'ai', 'ai-config', 'linter-config', 'terminal', 'problems', 'settings'],
+          enum: [...AGENT_UI_PANELS],
           description: 'Panel a abrir.'
         },
         folder: { type: 'string', description: 'Carpeta a enfocar si panel=files. Opcional.' }

@@ -17,7 +17,7 @@ import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace'
 import { mockCreateDoc, mockListDocs } from '@/lib/insecure-mock-store';
 import { isNasConfigured, putObject } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
-import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@/lib/contracts';
+import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 

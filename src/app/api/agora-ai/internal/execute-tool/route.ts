@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember } from '@/lib/server-auth';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
+import { isInternalToolSecretAuthorized, resolveInternalToolSecret } from '@/lib/agora-ai/internalToolAuth';
 import type { AgentExecutionContext, AgentToolCall } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 
@@ -15,7 +16,7 @@ export const maxDuration = 60;
  * clientes ajenos llamen este endpoint directamente.
  */
 
-const INTERNAL_SECRET = (process.env.BACKEND_INTERNAL_SECRET || process.env.HUB_INTERNAL_SECRET || '').trim();
+const INTERNAL_SECRET = resolveInternalToolSecret();
 
 interface ExecuteToolBody {
   call?: AgentToolCall;
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: 'BACKEND_INTERNAL_SECRET no configurado' }, { status: 500 });
   }
   const provided = request.headers.get('x-backend-internal-secret') || request.headers.get('x-hub-internal-secret') || '';
-  if (provided !== INTERNAL_SECRET) {
+  if (!isInternalToolSecretAuthorized(provided, INTERNAL_SECRET)) {
     return NextResponse.json({ ok: false, error: 'invalid_internal_secret' }, { status: 403 });
   }
 

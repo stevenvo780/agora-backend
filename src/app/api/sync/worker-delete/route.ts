@@ -18,7 +18,7 @@ import { deleteObject, isNasConfigured } from '@/lib/nas-storage';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 import { emitPing } from '@/lib/nas-events';
 import { getErrorMessage } from '@/lib/error-utils';
-import { sanitizeRepoPath, splitRepoPath } from '@/lib/contracts';
+import { sanitizeRepoPath, splitRepoPath } from '@agora/contracts';
 
 export async function POST(req: NextRequest) {
     try {

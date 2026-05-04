@@ -15,11 +15,11 @@ export const dynamic = 'force-dynamic';
 
 import { adminDb } from '@/lib/firebase-admin';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
-import { verifyWorkerAuth } from '@/lib/worker-auth';
+import { isWorkerAuthConfigured, verifyWorkerAuth } from '@/lib/worker-auth';
 import { presignGet, isNasConfigured } from '@/lib/nas-storage';
 import { buildRepoPath } from '@/lib/forgejo-path';
 import { getErrorMessage } from '@/lib/error-utils';
-import { parseDocumentRecord } from '@/lib/contracts';
+import { parseDocumentRecord } from '@agora/contracts';
 
 const SIGNED_TTL = 30 * 60; // 30 min — alcanza para descargar muchos blobs.
 
@@ -118,8 +118,7 @@ export async function HEAD() {
         status: 200,
         headers: {
             // Sin exponer el valor: sólo si el secret está configurado.
-            // eslint-disable-next-line no-restricted-syntax -- truthy check, no se compara como HMAC.
-            'X-Worker-Secret-Set': process.env.WORKER_SECRET ? '1' : '0'
+            'X-Worker-Secret-Set': isWorkerAuthConfigured() ? '1' : '0'
         }
     });
 }

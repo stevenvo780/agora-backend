@@ -15,6 +15,7 @@ import { getActivePlanId } from '@/app/api/payments/helpers';
 import { isNasConfigured, objectExists, getObjectBuffer, deleteObject, presignGet } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
 import crypto from 'node:crypto';
+import { parseRegisterUploadRequestPayload } from '@agora/contracts';
 
 export const runtime = 'nodejs';
 
@@ -26,7 +27,10 @@ export async function POST(req: NextRequest) {
         const auth = await requireAuth(req);
         if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
-        const body = await req.json();
+        const rawBody = await req.json().catch(() => null);
+        const parsed = parseRegisterUploadRequestPayload(rawBody);
+        if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+
         const {
             storagePath,
             fileName,
@@ -35,19 +39,7 @@ export async function POST(req: NextRequest) {
             workspaceId = PERSONAL_WORKSPACE_ID,
             folder = 'No estructurado',
             size: declaredSize
-        } = body as {
-            storagePath?: string;
-            fileName?: string;
-            originalName?: string;
-            mimeType?: string;
-            workspaceId?: string;
-            folder?: string;
-            size?: number;
-        };
-
-        if (!storagePath || !fileName) {
-            return NextResponse.json({ error: 'storagePath and fileName required' }, { status: 400 });
-        }
+        } = parsed.value;
 
         if (isPersonalWorkspaceId(workspaceId)) {
             if (!storagePath.startsWith(`users/${auth.uid}/`)) {

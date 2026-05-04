@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { parseForgejoTokenResponse } from '@/lib/contracts';
+import { parseForgejoTokenResponse } from '@agora/contracts';
 import { env } from '@/lib/env';
 
 /**

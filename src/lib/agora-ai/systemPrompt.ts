@@ -1,5 +1,6 @@
 import { AGENT_ACCESS_CAPABILITIES, normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import type { AgentAccessPolicy, AgentMode } from '@/lib/agora-ai/types';
+import { AGENT_UI_PANEL_DESCRIPTION } from '@/lib/agora-ai/uiPanels';
 
 interface BuildSystemPromptOptions {
   mode: AgentMode;
@@ -142,7 +143,7 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       '`git_status`: revisa cambios pendientes del repo del workspace.',
       '`git_log`: lee commits recientes.',
       '`git_commit_workspace`: crea commit Git y siempre requiere confirmación.',
-      '`open_app_panel`: abre paneles de UI como files, git, terminal, problems, ai, board, semantic o settings.',
+      `\`open_app_panel\`: abre paneles de UI como ${AGENT_UI_PANEL_DESCRIPTION}.`,
       '`report_debug`: publica mensajes en el bus de Problemas cuando detectes fallos, warnings o pasos de diagnóstico importantes.',
       'Si una tool falla o un comando devuelve exitCode distinto de 0, explica el problema y usa `report_debug` si necesitas que quede visible en Problemas.',
       ''

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { MercadoPagoConfig, Payment } from 'mercadopago';
 import { adminDb } from '@/lib/firebase-admin';
@@ -12,6 +11,7 @@ import {
   isPendingMercadoPagoPaymentStatus
 } from '@/types/payments';
 import { env } from '@/lib/env';
+import { verifyMercadoPagoWebhookSignature } from '@/lib/payments/mercadoPagoWebhookSignature';
 
 const mpAccessToken = env.MERCADOPAGO_ACCESS_TOKEN();
 const mpWebhookSecret = env.MERCADOPAGO_WEBHOOK_SECRET();
@@ -27,24 +27,12 @@ const mpWebhookSecret = env.MERCADOPAGO_WEBHOOK_SECRET();
  * fraudulentos que el handler tendría que validar contra la API real de MP.
  */
 const verifyMpSignature = (req: NextRequest, dataId: string | number | undefined): boolean => {
-  if (!mpWebhookSecret) {
-    if (process.env.NODE_ENV === 'production') return false;
-    return true;
-  }
-  const sigHeader = req.headers.get('x-signature') ?? '';
-  const requestId = req.headers.get('x-request-id') ?? '';
-  if (!sigHeader || !requestId || !dataId) return false;
-  const parts = Object.fromEntries(
-    sigHeader.split(',').map((p) => p.trim().split('=', 2) as [string, string])
-  );
-  const ts = parts.ts;
-  const v1 = parts.v1;
-  if (!ts || !v1) return false;
-  const manifest = `id:${dataId};request-id:${requestId};ts:${ts};`;
-  const expected = crypto.createHmac('sha256', mpWebhookSecret).update(manifest).digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(v1, 'hex'));
-  } catch { return false; }
+  return verifyMercadoPagoWebhookSignature({
+    secret: mpWebhookSecret,
+    signatureHeader: req.headers.get('x-signature') ?? '',
+    requestId: req.headers.get('x-request-id') ?? '',
+    dataId
+  });
 };
 
 const logPaymentEvent = async (entry: Record<string, unknown>) => {

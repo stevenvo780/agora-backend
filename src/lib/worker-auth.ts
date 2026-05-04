@@ -1,12 +1,13 @@
 /**
  * Auth HMAC para workers. Los workers no son usuarios Firebase; identifican
  * una workspace vía `WORKER_TOKEN` (= workspaceId) firmado con el
- * `WORKER_SECRET` compartido del host.
+ * `WORKER_SYNC_SECRET` compartido del host (`WORKER_SECRET` queda como fallback
+ * legacy; `WORKER_SECRET_PREVIOUS` permite rotar sin downtime).
  *
  * Headers:
  *   X-Worker-Token: <workspaceId>          (`personal:<uid>` o `personal` para personal)
  *   X-Worker-Ts:    <unix-ms>
- *   X-Worker-Sig:   hex(hmacSha256(WORKER_SECRET, `${token}:${ts}${uidPart}`))
+ *   X-Worker-Sig:   hex(hmacSha256(secret, `${token}:${ts}${uidPart}`))
  *   X-Worker-Uid:   <uid>                   (requerido cuando token es `personal`)
  *
  * Para personal workspaces el uid se incluye en la firma como `:${uid}`.
@@ -16,7 +17,6 @@ import crypto from 'node:crypto';
 import type { NextRequest } from '@/lib/http/next-server';
 import { env } from '@/lib/env';
 
-const SECRET = env.WORKER_SECRET();
 const MAX_SKEW_MS = 5 * 60 * 1000;
 
 export interface WorkerAuthContext {
@@ -26,12 +26,24 @@ export interface WorkerAuthContext {
   ts: number;
 }
 
-export const isWorkerAuthConfigured = () => SECRET.length > 0;
+const getWorkerAuthSecrets = () => Array.from(new Set([
+  env.WORKER_SYNC_SECRET(),
+  env.WORKER_SECRET(),
+  env.WORKER_SECRET_PREVIOUS()
+].filter(Boolean)));
+
+export const isWorkerAuthConfigured = () => getWorkerAuthSecrets().length > 0;
 
 const isPersonalToken = (token: string) => token === 'personal' || token.startsWith('personal:');
 
+export const buildWorkerAuthSignature = (secret: string, token: string, ts: number, userId: string | null = null) => {
+  const uidPart = userId ? `:${userId}` : '';
+  return crypto.createHmac('sha256', secret).update(`${token}:${ts}${uidPart}`).digest('hex');
+};
+
 export const verifyWorkerAuth = (req: NextRequest): WorkerAuthContext | null => {
-  if (!SECRET) return null;
+  const secrets = getWorkerAuthSecrets();
+  if (secrets.length === 0) return null;
   const token = req.headers.get('x-worker-token');
   const tsStr = req.headers.get('x-worker-ts');
   const sig = req.headers.get('x-worker-sig');
@@ -51,12 +63,18 @@ export const verifyWorkerAuth = (req: NextRequest): WorkerAuthContext | null => 
     if (!userId) return null;
   }
 
-  const uidPart = userId ? `:${userId}` : '';
-  const expected = crypto.createHmac('sha256', SECRET).update(`${token}:${ts}${uidPart}`).digest('hex');
-  let ok = expected.length === sig.length;
-  if (ok) {
-    try { ok = crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex')); }
-    catch { ok = false; }
+  let ok = false;
+  for (const secret of secrets) {
+    const expected = buildWorkerAuthSignature(secret, token, ts, userId);
+    let match = expected.length === sig.length;
+    if (match) {
+      try { match = crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex')); }
+      catch { match = false; }
+    }
+    if (match) {
+      ok = true;
+      break;
+    }
   }
   if (!ok) return null;
 

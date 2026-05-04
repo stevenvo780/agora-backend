@@ -1,6 +1,6 @@
 /**
  * GET /api/diag/inspect-doc?id=<docId>
- * Devuelve metadata cruda del doc (storagePath, type, mime). Auth: WORKER_SECRET
+ * Devuelve metadata cruda del doc (storagePath, type, mime). Auth: CRON_SECRET
  * en `Authorization: Bearer ...`. Pensado para debug puntual; no expone contenido.
  */
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
@@ -12,7 +12,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
     const auth = req.headers.get('authorization') ?? '';
-    const expected = `Bearer ${env.WORKER_SECRET()}`;
+    const cronSecret = env.CRON_SECRET();
+    const expected = `Bearer ${cronSecret}`;
+    if (!cronSecret) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     if (!auth || auth !== expected) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
     const id = new URL(req.url).searchParams.get('id');

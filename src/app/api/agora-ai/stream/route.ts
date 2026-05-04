@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
         // "stream terminó sin respuesta final".
         send({
           type: 'complete',
-          reply: 'La respuesta del agente fue truncada por límite de tiempo del servidor (5 min). Intenta una solicitud más específica o divídela en pasos.',
+          reply: 'La respuesta del agente fue truncada por límite de tiempo del servidor (~12 min). Intenta una solicitud más específica o divídela en pasos.',
           agentRun: {
             mode: effectiveMode,
             provider,

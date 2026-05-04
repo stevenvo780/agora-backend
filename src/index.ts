@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { auditOnce } from '@/lib/env';
+import { randomUUID } from 'node:crypto';
+import { auditOnce, auditProductionEnv } from '@/lib/env';
+import { createRateLimitMiddleware } from '@/lib/rate-limit';
 import { mountNextStyleApiRoutes } from './routes/nextApiRouter.js';
 
 const app = express();
@@ -35,9 +37,43 @@ app.use(cors({
   ]
 }));
 
+app.use((req, res, next) => {
+  const incoming = req.get('x-request-id')?.trim();
+  const requestId = incoming && incoming.length <= 128 ? incoming : randomUUID();
+  req.headers['x-request-id'] = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'agora-backend', timestamp: new Date().toISOString() });
 });
+
+app.get('/health/deep', (req, res) => {
+  const envAudit = auditProductionEnv();
+  const envOk = envAudit.missing.length === 0;
+  res.status(envOk ? 200 : 503).json({
+    status: envOk ? 'ok' : 'degraded',
+    service: 'agora-backend',
+    requestId: req.get('x-request-id'),
+    timestamp: new Date().toISOString(),
+    checks: {
+      env: {
+        status: envOk ? 'ok' : 'degraded',
+        missingCriticalCount: envAudit.missing.length,
+        warningCount: envAudit.warnings.length
+      }
+    }
+  });
+});
+
+const publicApiRateLimit = createRateLimitMiddleware({
+  windowMs: Number(process.env.PUBLIC_API_RATE_LIMIT_WINDOW_MS || 60_000),
+  maxPerWindow: Number(process.env.PUBLIC_API_RATE_LIMIT_MAX || 120),
+  keyPrefix: 'public-api:'
+});
+
+app.use(['/api/auth', '/api/payments', '/api/agora-ai'], publicApiRateLimit);
 
 auditOnce();
 await mountNextStyleApiRoutes(app);

@@ -3,6 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
 import { isPersonalWorkspaceId } from '@/types/workspace';
+import { parseSnippetUpdatePayload } from '@agora/contracts';
 
 const canAccessSnippet = async (snippet: Record<string, unknown> | undefined, uid: string) => {
   const workspaceId = typeof snippet?.workspaceId === 'string' ? snippet.workspaceId : null;
@@ -21,8 +22,11 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
     const { id } = await context.params;
-    const body = await req.json();
-    const allowed = ['title', 'description', 'markdown', 'category', 'order'] as const;
+    const rawBody = await req.json().catch(() => null);
+    const parsed = parseSnippetUpdatePayload(rawBody);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    const body = parsed.value;
+
     const ref = adminDb.collection('snippets').doc(id);
     const snap = await ref.get();
     if (!snap.exists) {
@@ -32,10 +36,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const updates: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
-    for (const key of allowed) {
-      if (key in body) updates[key] = body[key];
-    }
+    const updates: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp(), ...body };
 
     await ref.update(updates);
     return NextResponse.json({ id, ...updates });

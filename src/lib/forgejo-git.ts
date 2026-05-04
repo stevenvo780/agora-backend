@@ -3,7 +3,7 @@
  * No clonamos localmente: hacemos PUT/POST/DELETE sobre `/contents/{path}` y
  * `/commits` para obtener historia.
  */
-import { parseForgejoCommitResponse, parseForgejoTreeResponse } from '@/lib/contracts';
+import { parseForgejoCommitResponse, parseForgejoTreeResponse } from '@agora/contracts';
 import { env } from '@/lib/env';
 
 const apiUrl = env.FORGEJO_API_URL() || undefined;

@@ -14,6 +14,9 @@ const isProd = (): boolean => process.env.NODE_ENV === 'production';
 
 export const env = {
   WORKER_SECRET: () => trim('WORKER_SECRET'),
+  WORKER_SYNC_SECRET: () => trim('WORKER_SYNC_SECRET'),
+  WORKER_SOCKET_SECRET: () => trim('WORKER_SOCKET_SECRET'),
+  WORKER_SECRET_PREVIOUS: () => trim('WORKER_SECRET_PREVIOUS'),
   CRON_SECRET: () => trim('CRON_SECRET'),
   FORGEJO_API_URL: () => trim('FORGEJO_API_URL'),
   FORGEJO_ADMIN_TOKEN: () => trim('FORGEJO_ADMIN_TOKEN'),
@@ -42,11 +45,9 @@ export interface EnvCheck {
 }
 
 /**
- * Audita las env vars requeridas en producción. Llamada al primer hit de
- * cualquier endpoint sensible — si falta algo se loguea WARN (NO matamos
- * el proceso para no tirar el deploy entero, pero el warn es muy ruidoso).
- *
- * Para prod ideal: invocar al boot del server y hacer crash si falta.
+ * Audita las env vars requeridas en producción. Se invoca al boot y debe
+ * fallar rápido si falta una crítica: un deploy roto es preferible a una
+ * API viva que responde 401/500 aleatorios en los bordes sensibles.
  */
 export const auditProductionEnv = (): EnvCheck => {
   const missing: string[] = [];
@@ -54,7 +55,6 @@ export const auditProductionEnv = (): EnvCheck => {
   if (!isProd()) return { ok: true, missing, warnings };
 
   const required: Array<keyof typeof env> = [
-    'WORKER_SECRET',
     'CRON_SECRET',
     'FORGEJO_API_URL',
     'FORGEJO_ADMIN_TOKEN',
@@ -68,9 +68,25 @@ export const auditProductionEnv = (): EnvCheck => {
     if (!env[k]()) missing.push(k);
   }
 
+  if (!env.WORKER_SYNC_SECRET() && !env.WORKER_SECRET()) {
+    missing.push('WORKER_SYNC_SECRET|WORKER_SECRET');
+  }
+
+  if (!env.WORKER_SYNC_SECRET() && env.WORKER_SECRET()) {
+    warnings.push('WORKER_SYNC_SECRET no configurada — usando WORKER_SECRET legacy para sync HTTP');
+  }
+
+  if (env.ALLOW_INSECURE_AUTH()) {
+    missing.push('NEXT_PUBLIC_ALLOW_INSECURE_AUTH=true');
+  }
+
+  if (env.ENABLE_ADMIN_ENDPOINTS() && !env.ADMIN_PASSWORD()) {
+    missing.push('APP_PASSWORD');
+  }
+
   const recommended: Array<keyof typeof env> = ['MERCADOPAGO_WEBHOOK_SECRET'];
   for (const k of recommended) {
-    if (!env[k]()) warnings.push(`${k} no configurada — endpoint en modo permisivo`);
+    if (!env[k]()) warnings.push(`${k} no configurada — webhook de pagos rechazará eventos en producción`);
   }
 
   return { ok: missing.length === 0, missing, warnings };
@@ -82,7 +98,7 @@ export const auditOnce = (): void => {
   _audited = true;
   const r = auditProductionEnv();
   if (r.missing.length > 0) {
-    console.error('[env] FALTAN env vars críticas en prod:', r.missing.join(', '));
+    throw new Error(`[env] FALTAN env vars críticas en prod: ${r.missing.join(', ')}`);
   }
   for (const w of r.warnings) console.warn('[env]', w);
 };
