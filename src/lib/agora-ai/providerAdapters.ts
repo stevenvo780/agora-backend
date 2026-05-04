@@ -1,6 +1,8 @@
 import { buildAgoraSystemPrompt, extractThinkingSegments } from '@/lib/agora-ai/systemPrompt';
 import { toAnthropicTools, toGeminiTools, toOpenAITools } from '@/lib/agora-ai/toolDefinitions';
 import { normalizeAgentAccessPolicy, profileAutoConfirms } from '@/lib/agora-ai/accessPolicy';
+import { maybeCompact } from '@/lib/agora-ai/conversationCompactor';
+import { createSummaryClient } from '@/lib/agora-ai/summaryClient';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
 import { isCacheableAgentTool, isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
 import type {
@@ -384,6 +386,35 @@ async function executeToolsParallel(
   });
 }
 
+async function compactInputMessages(
+  options: ProviderRunOptions,
+  emitStatus: (status: string) => Promise<void>
+): Promise<typeof options.messages> {
+  try {
+    const summaryClient = createSummaryClient({
+      provider: options.provider,
+      apiKey: options.apiKey,
+      model: options.model
+    });
+    const result = await maybeCompact(
+      options.provider,
+      options.model,
+      options.messages,
+      summaryClient
+    );
+    if (result.compacted) {
+      await emitStatus(
+        `Conversación compactada: ${result.removedCount} mensajes resumidos `
+        + `(uso ${(result.decision.ratio * 100).toFixed(0)}% del contexto).`
+      );
+    }
+    return result.messages;
+  } catch (err) {
+    console.warn('[providerAdapters] compactación falló, sigo sin compactar:', err);
+    return options.messages;
+  }
+}
+
 async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   const providerConfig = options.provider === 'deepseek'
     ? OPENAI_COMPATIBLE_PROVIDERS.deepseek
@@ -398,9 +429,10 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     accessPolicy: options.executionContext.accessPolicy
   });
 
+  const inputMessages = await compactInputMessages(options, emitStatus);
   const messages: Array<Record<string, unknown>> = [
     { role: 'system', content: systemPrompt },
-    ...options.messages
+    ...inputMessages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role, content: m.content }))
   ];
@@ -578,8 +610,9 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   // Sonnet/Opus support up to 64K output; cap at 16K (thinking budget + visible headroom).
   const maxTokens = useNativeThinking ? 16000 : 8192;
 
+  const inputMessages = await compactInputMessages(options, emitStatus);
   const messages: Array<{ role: 'user' | 'assistant'; content: string | AnthropicBlock[] }> =
-    options.messages
+    inputMessages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
 
@@ -760,8 +793,9 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
     accessPolicy: options.executionContext.accessPolicy
   });
 
+  const inputMessages = await compactInputMessages(options, emitStatus);
   const contents: Array<{ role: 'user' | 'model'; parts: Array<Record<string, unknown>> }> =
-    options.messages
+    inputMessages
       .filter(m => m.role !== 'system')
       .map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
