@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
             fileName,
             mimeType,
             workspaceId = PERSONAL_WORKSPACE_ID,
-            folder = 'No estructurado',
+            folder = '',
             fileSize
         } = parsed.value;
 

@@ -36,7 +36,7 @@ docs.set(seedId, {
   content: 'Este es un texto de prueba para la busqueda. La busqueda debe funcionar.',
   type: DocumentType.Text,
   workspaceId: PERSONAL_WORKSPACE_ID,
-  folder: 'No estructurado',
+  folder: '',
   ownerId: 'test-user-insecure',
   createdAt: { seconds: Date.now() / 1000 },
   updatedAt: { seconds: Date.now() / 1000 }
@@ -52,7 +52,7 @@ export function mockCreateDoc(data: Partial<MockDoc> & { name: string; ownerId: 
     content: typeof data.content === 'string' ? data.content : '',
     type: data.type || DocumentType.Text,
     workspaceId: data.workspaceId || PERSONAL_WORKSPACE_ID,
-    folder: data.folder || 'No estructurado',
+    folder: data.folder ?? '',
     ownerId: data.ownerId,
     mimeType: data.mimeType ?? null,
     createdAt: { seconds: now },

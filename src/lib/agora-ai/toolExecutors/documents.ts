@@ -980,8 +980,8 @@ async function uploadExternalUrl(call: AgentToolCall, ctx: AgentExecutionContext
   const confirmed = call.args.confirmed === true;
   if (!url) throw new Error('url es requerida');
   if (!confirmed) {
-    return confirm(call, `¿Descargar "${url}" e ingestar como documento en "${targetFolder || 'No estructurado'}"?`, {
-      url, targetFolder: targetFolder || 'No estructurado'
+    return confirm(call, `¿Descargar "${url}" e ingestar como documento en "${targetFolder || '(raíz)'}"?`, {
+      url, targetFolder
     });
   }
   let parsed: URL;

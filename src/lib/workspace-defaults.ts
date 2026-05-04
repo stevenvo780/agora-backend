@@ -72,7 +72,7 @@ const seedDoc = async (opts: SeedDefaultDocOptions): Promise<string | null> => {
     .get();
   if (!existing.empty) return existing.docs[0]?.id ?? null;
 
-  const folder = 'No estructurado';
+  const folder = '';
   const storagePath = buildStoragePath({
     workspaceId: opts.workspaceId,
     ownerId: opts.ownerId,

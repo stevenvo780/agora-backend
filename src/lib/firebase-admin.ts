@@ -52,13 +52,12 @@ function parseServiceAccount(raw?: string): ServiceAccount | undefined {
 const serviceAccount = parseServiceAccount(serviceAccountStr);
 
 const projectId = process.env.FIREBASE_PROJECT_ID ? process.env.FIREBASE_PROJECT_ID.trim() : undefined;
-const configuredBucket = process.env.FIREBASE_STORAGE_BUCKET ? process.env.FIREBASE_STORAGE_BUCKET.trim() : undefined;
-const fallbackBucket = projectId ? `${projectId}.appspot.com` : undefined;
-const storageBucket = configuredBucket || fallbackBucket;
 const configuredRtdbUrl = process.env.FIREBASE_DATABASE_URL ? process.env.FIREBASE_DATABASE_URL.trim() : undefined;
 const fallbackRtdbUrl = projectId ? `https://${projectId}-default-rtdb.firebaseio.com` : undefined;
 const databaseURL = configuredRtdbUrl || fallbackRtdbUrl;
 
+// Firebase Storage NO se usa: los blobs viven en MinIO (NAS).
+// Sólo cableamos credentials, projectId y RTDB.
 let app: App;
 
 if (!getApps().length) {
@@ -66,11 +65,10 @@ if (!getApps().length) {
     app = initializeApp({
       credential: cert(serviceAccount),
       projectId,
-      storageBucket,
       databaseURL
     });
   } else {
-    app = initializeApp({ projectId, storageBucket, databaseURL });
+    app = initializeApp({ projectId, databaseURL });
   }
 } else {
   app = getApp();

@@ -45,7 +45,7 @@ export const emitPing = async (ping: SyncPing): Promise<{ outboxId: string; rtdb
   const rawPayload = {
     type: ping.op ?? 'updated',
     path: ping.path ?? '',
-    folder: ping.folder ?? 'No estructurado',
+    folder: ping.folder ?? '',
     docId: ping.docId ?? null,
     timestamp: ts,
     schemaVersion: 1,

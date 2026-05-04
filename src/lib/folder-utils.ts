@@ -1,4 +1,4 @@
-const DEFAULT_FOLDER_NAME = 'No estructurado';
+const DEFAULT_FOLDER_NAME = '';
 
 const normalizePath = (value?: string) => {
   if (!value) return '';
@@ -9,9 +9,6 @@ const normalizePath = (value?: string) => {
     .join('/');
 };
 
-const normalizeFolderPath = (value?: string) => {
-  const normalized = normalizePath(value);
-  return normalized || DEFAULT_FOLDER_NAME;
-};
+const normalizeFolderPath = (value?: string) => normalizePath(value);
 
 export { DEFAULT_FOLDER_NAME, normalizePath, normalizeFolderPath };

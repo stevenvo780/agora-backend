@@ -19,9 +19,8 @@ interface DocLite {
 const findGitignoreDoc = async (workspaceQuery: FirebaseFirestore.Query): Promise<DocLite | null> => {
   const snap = await workspaceQuery.where('name', '==', '.gitignore').limit(5).get();
   if (snap.empty) return null;
-  // Prefer el que esté en la raíz (folder = "No estructurado" / vacío).
   const docs = snap.docs.map(d => d.data() as DocLite);
-  const root = docs.find(d => !d.folder || d.folder === 'No estructurado');
+  const root = docs.find(d => !d.folder);
   return root ?? docs[0] ?? null;
 };
 

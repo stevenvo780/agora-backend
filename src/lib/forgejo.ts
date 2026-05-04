@@ -351,6 +351,65 @@ export const issueTokenForUser = async (uid: string, tokenName: string, scopes: 
   return parsed.ok ? parsed.value.sha1 : null;
 };
 
+export interface MigrateRepoParams {
+  ownerUid: string;
+  email?: string;
+  displayName?: string;
+  cloneAddr: string;
+  repoName?: string;
+  description?: string;
+  authToken?: string;
+  authUsername?: string;
+  authPassword?: string;
+  private?: boolean;
+  mirror?: boolean;
+}
+
+/**
+ * Importa un repo externo a Forgejo via la API de migración. Asegura que el
+ * user `agora-<uid>` exista (lo crea si hace falta), y crea un repo nuevo
+ * en la org `agora` clonado del `cloneAddr`. La migración la hace Forgejo
+ * server-side, sin necesidad de tener `git` CLI en este proceso.
+ */
+export const migrateRepo = async (params: MigrateRepoParams): Promise<ForgejoRepo> => {
+  await ensureOrgExists();
+  const userResult = await ensureForgejoUser(params.ownerUid, params.email, params.displayName);
+
+  const baseName = params.repoName?.trim() || params.cloneAddr.split('/').pop()?.replace(/\.git$/, '') || 'imported';
+  const safeName = slugify(baseName);
+
+  const body: Record<string, unknown> = {
+    clone_addr: params.cloneAddr,
+    repo_name: safeName,
+    repo_owner: org,
+    service: 'git',
+    private: params.private !== false,
+    mirror: params.mirror === true,
+    wiki: false,
+    issues: false,
+    pull_requests: false,
+    releases: false
+  };
+  if (params.description) body.description = params.description;
+  if (params.authToken) body.auth_token = params.authToken;
+  if (params.authUsername) body.auth_username = params.authUsername;
+  if (params.authPassword) body.auth_password = params.authPassword;
+
+  const migrate = await fetchAdmin<ForgejoRepo>(`/api/v1/repos/migrate`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+  if (migrate.status === 409) {
+    throw new Error(`Ya existe un repo con el nombre "${safeName}". Cámbialo y reintenta.`);
+  }
+  if (migrate.status >= 400 || !migrate.body) {
+    throw new Error(`Forgejo migrate falló (${migrate.status}): ${migrate.raw.slice(0, 300)}`);
+  }
+
+  await grantWriteAccess(safeName, userResult.user.login).catch(() => undefined);
+  return migrate.body;
+};
+
 /** Lista repos accesibles para un user (usa búsqueda admin). */
 export const listUserRepos = async (uid: string): Promise<ForgejoRepo[]> => {
   const login = userLoginFor(uid);

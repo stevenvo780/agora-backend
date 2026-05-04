@@ -72,7 +72,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
                         name: 'Documento de Prueba.md',
                         type: DocumentType.Text,
                         workspaceId: PERSONAL_WORKSPACE_ID,
-                        folder: 'No estructurado',
+                        folder: '',
                         updatedAt: { seconds: Date.now() / 1000 },
                         createdAt: { seconds: Date.now() / 1000 },
                         ownerId: auth.uid
