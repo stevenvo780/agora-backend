@@ -137,6 +137,23 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
+    // Semantic / Glossary guidance
+    base.push(
+      '### Panel semántico (glosario de conceptos)',
+      'Tienes CRUD completo sobre el glosario:',
+      '`get_semantic_state` o `list_concepts`: leer conceptos.',
+      '`define_concept`: crea o actualiza por título exacto (upsert).',
+      '`update_concept`: edita un concepto existente por `conceptId` (preferido) o `title`. Aplica cambios parciales en title/definition/formula/logicProfile/status.',
+      '`delete_concept`: elimina concepto Y sus relaciones asociadas (cascada). Requiere `confirmed:true` en la segunda llamada.',
+      '`create_relation`: enlaza dos conceptos con un `relationType`.',
+      '`update_relation`: cambia `relationType` o `status` por `relationId`.',
+      '`delete_relation`: elimina relación por `relationId`. Requiere `confirmed:true` en la segunda llamada.',
+      '`merge_concepts`: fusiona dos conceptos (las relaciones del origen se redirigen al destino).',
+      '`find_orphaned_concepts`: lista conceptos sin relaciones (candidatos a cleanup).',
+      'Cuando el usuario pida "edita / cambia / corrige / borra" un concepto, NO uses `define_concept` — usa `update_concept` o `delete_concept` con el id apropiado. Reserva `define_concept` para creación o actualización por título.',
+      ''
+    );
+
     // Board / Kanban guidance
     base.push(
       '### Tablero Kanban',
@@ -256,12 +273,19 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       const normalizedPolicy = normalizeAgentAccessPolicy(accessPolicy);
       const enabled = AGENT_ACCESS_CAPABILITIES.filter((capability) => normalizedPolicy.capabilities[capability]);
       const disabled = AGENT_ACCESS_CAPABILITIES.filter((capability) => !normalizedPolicy.capabilities[capability]);
+      const toolPermissionEntries = Object.entries(normalizedPolicy.toolPermissions ?? {});
+      const enabledTools = toolPermissionEntries.filter(([, value]) => value).map(([name]) => name);
+      const disabledTools = toolPermissionEntries.filter(([, value]) => !value).map(([name]) => name);
       base.push(
         '### Perfil de acceso activo',
         `Perfil: ${normalizedPolicy.profile}.`,
         `Capacidades habilitadas: ${enabled.join(', ') || 'ninguna'}.`,
         `Capacidades bloqueadas: ${disabled.join(', ') || 'ninguna'}.`,
-        'No intentes usar tools bloqueadas por el perfil. Si necesitas más permisos, pide al usuario cambiar el nivel de acceso desde el selector del chat o Configuración > Agora IA.',
+        ...(enabledTools.length || disabledTools.length ? [
+          `Tools habilitadas individualmente: ${enabledTools.join(', ') || 'ninguna'}.`,
+          `Tools bloqueadas individualmente: ${disabledTools.join(', ') || 'ninguna'}.`
+        ] : []),
+        'No intentes usar tools bloqueadas por el perfil o por permiso individual. Si necesitas más permisos, pide al usuario cambiar el nivel de acceso desde el selector del chat o Configuración > Agora IA.',
         ''
       );
     }
@@ -293,9 +317,9 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
     const submit = (hooks.userPromptSubmit || []).filter(Boolean).slice(0, 10);
     if (pre.length || post.length || submit.length) {
       base.push('### Hooks del usuario');
-      if (submit.length) base.push('UserPromptSubmit (aplicar al inicio de cada turno):\n- ' + submit.join('\n- '));
-      if (pre.length) base.push('PreToolUse (revisar antes de CADA tool call):\n- ' + pre.join('\n- '));
-      if (post.length) base.push('PostToolUse (revisar después de cada tool call):\n- ' + post.join('\n- '));
+      if (submit.length) base.push(`UserPromptSubmit (aplicar al inicio de cada turno):\n- ${submit.join('\n- ')}`);
+      if (pre.length) base.push(`PreToolUse (revisar antes de CADA tool call):\n- ${pre.join('\n- ')}`);
+      if (post.length) base.push(`PostToolUse (revisar después de cada tool call):\n- ${post.join('\n- ')}`);
     }
   }
 

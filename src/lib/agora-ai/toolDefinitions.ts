@@ -1,5 +1,6 @@
 import { DocumentType } from '@/types/documents';
-import type { AgentToolDefinition } from '@/lib/agora-ai/types';
+import { isAgentToolAllowedByPolicy } from '@/lib/agora-ai/accessPolicy';
+import type { AgentAccessPolicy, AgentToolDefinition } from '@/lib/agora-ai/types';
 import { AGENT_UI_PANEL_DESCRIPTION, AGENT_UI_PANELS } from '@/lib/agora-ai/uiPanels';
 
 export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
@@ -631,27 +632,63 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     }
   },
   {
-    name: 'list_glossary_entries',
-    description: 'Lista entradas del glosario semántico del workspace.',
+    name: 'update_concept',
+    description: 'Edita un concepto existente del glosario semántico. Identifica por conceptId, id o title; aplica cambios parciales en title/definition/formula/logicProfile/status.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Filtro opcional por texto.' },
-        limit: { type: 'number', description: 'Máximo de resultados, entre 1 y 50.' }
+        conceptId: { type: 'string', description: 'ID del concepto a editar (preferido).' },
+        id: { type: 'string', description: 'Alias de conceptId.' },
+        title: { type: 'string', description: 'Si conceptId no se da, busca por título exacto. Si se da junto a conceptId, renombra.' },
+        definition: { type: 'string' },
+        formula: { type: 'string' },
+        logicProfile: { type: 'string' },
+        status: { type: 'string', enum: ['draft', 'validated', 'archived'] }
       },
       additionalProperties: false
     }
   },
   {
-    name: 'search_glossary_entries',
-    description: 'Busca entradas del glosario / conceptos por nombre, definición o fórmula.',
+    name: 'delete_concept',
+    description: 'Elimina un concepto del glosario semántico y sus relaciones asociadas (cascada). Requiere confirmed:true en la segunda llamada.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Texto de búsqueda.' },
-        limit: { type: 'number', description: 'Máximo de resultados, entre 1 y 25.' }
+        conceptId: { type: 'string', description: 'ID del concepto.' },
+        id: { type: 'string', description: 'Alias de conceptId.' },
+        title: { type: 'string', description: 'Alternativa: título exacto.' },
+        confirmed: { type: 'boolean', description: 'Pasar true tras confirmar con el usuario.' }
       },
-      required: ['query'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'update_relation',
+    description: 'Edita una relación semántica existente. Identifica por relationId; permite cambiar relationType y status.',
+    parameters: {
+      type: 'object',
+      properties: {
+        relationId: { type: 'string', description: 'ID de la relación.' },
+        id: { type: 'string', description: 'Alias de relationId.' },
+        relationType: {
+          type: 'string',
+          enum: ['supports', 'contradicts', 'implies', 'depends-on', 'defines', 'example-of', 'evidence-for', 'evidence-against', 'restates', 'questions', 'related-to']
+        },
+        status: { type: 'string', enum: ['draft', 'validated', 'archived'] }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_relation',
+    description: 'Elimina una relación semántica por relationId. Requiere confirmed:true en la segunda llamada.',
+    parameters: {
+      type: 'object',
+      properties: {
+        relationId: { type: 'string' },
+        id: { type: 'string', description: 'Alias de relationId.' },
+        confirmed: { type: 'boolean' }
+      },
       additionalProperties: false
     }
   },
@@ -1002,20 +1039,6 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
-    name: 'link_concepts',
-    description: 'Crea una relación entre dos conceptos del glosario semántico (alias de create_relation).',
-    parameters: {
-      type: 'object',
-      properties: {
-        sourceId: { type: 'string' },
-        targetId: { type: 'string' },
-        kind: { type: 'string', description: 'Tipo de relación (ej. is-a, depends-on).' }
-      },
-      required: ['sourceId', 'targetId'],
-      additionalProperties: false
-    }
-  },
-  {
     name: 'prove_step',
     description: 'Pide al runtime ST que pruebe una conclusión a partir de axiomas declarados en el program. Devuelve status (provable/unknown/unprovable).',
     parameters: {
@@ -1120,15 +1143,6 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
         confirmed: { type: 'boolean' }
       },
       required: ['documentId', 'snippetId'],
-      additionalProperties: false
-    }
-  },
-  {
-    name: 'semantic_search_workspace',
-    description: 'Búsqueda semántica vectorial. NO implementada (Agora no genera embeddings); usa search_workspace por tokens.',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string' } },
       additionalProperties: false
     }
   },
@@ -1552,7 +1566,11 @@ export const AGORA_AGENT_TOOL_MAP = Object.fromEntries(
 
 export const AGORA_AGENT_TOOL_NAMES = AGORA_AGENT_TOOLS.map(tool => tool.name);
 
-export const toOpenAITools = () => AGORA_AGENT_TOOLS.map(tool => ({
+const toolsForPolicy = (policy?: Partial<AgentAccessPolicy>) => (
+  policy ? AGORA_AGENT_TOOLS.filter(tool => isAgentToolAllowedByPolicy(tool.name, policy)) : AGORA_AGENT_TOOLS
+);
+
+export const toOpenAITools = (policy?: Partial<AgentAccessPolicy>) => toolsForPolicy(policy).map(tool => ({
   type: 'function' as const,
   function: {
     name: tool.name,
@@ -1561,7 +1579,7 @@ export const toOpenAITools = () => AGORA_AGENT_TOOLS.map(tool => ({
   }
 }));
 
-export const toAnthropicTools = () => AGORA_AGENT_TOOLS.map(tool => ({
+export const toAnthropicTools = (policy?: Partial<AgentAccessPolicy>) => toolsForPolicy(policy).map(tool => ({
   name: tool.name,
   description: tool.description,
   input_schema: tool.parameters
@@ -1585,13 +1603,14 @@ function stripAdditionalProperties(schema: Record<string, unknown>): Record<stri
   return rest;
 }
 
-export const toGeminiTools = () => [{
-  functionDeclarations: AGORA_AGENT_TOOLS.map(tool => ({
+export const toGeminiTools = (policy?: Partial<AgentAccessPolicy>) => {
+  const functionDeclarations = toolsForPolicy(policy).map(tool => ({
     name: tool.name,
     description: tool.description,
     parameters: stripAdditionalProperties(tool.parameters as unknown as Record<string, unknown>)
-  }))
-}];
+  }));
+  return functionDeclarations.length > 0 ? [{ functionDeclarations }] : [];
+};
 
 /**
  * Core tools subset for smaller models (e.g. Ollama / qwen3:14b).
@@ -1635,8 +1654,8 @@ const OLLAMA_CORE_TOOL_NAMES = new Set([
 ]);
 
 // Ollama uses OpenAI-compatible format but with a reduced tool set
-export const toOllamaTools = () =>
-  AGORA_AGENT_TOOLS
+export const toOllamaTools = (policy?: Partial<AgentAccessPolicy>) =>
+  toolsForPolicy(policy)
     .filter(tool => OLLAMA_CORE_TOOL_NAMES.has(tool.name))
     .map(tool => ({
       type: 'function' as const,

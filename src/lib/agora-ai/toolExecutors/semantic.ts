@@ -231,14 +231,97 @@ async function searchGlossaryEntries(call: AgentToolCall, ctx: AgentExecutionCon
 
 async function findOrphanedConcepts(call: AgentToolCall, ctx: AgentExecutionContext) {
   const state = await loadSemanticState(ctx);
-  const linkedConceptIds = new Set<string>();
+  const linked = new Set<string>();
   for (const r of state.relations) {
-    if (r.conceptId) linkedConceptIds.add(String(r.conceptId));
+    if (r.conceptId) linked.add(String(r.conceptId));
+    if (r.sourceEntityId) linked.add(String(r.sourceEntityId));
+    if (r.targetEntityId) linked.add(String(r.targetEntityId));
   }
   const orphans = state.concepts
-    .filter(c => !linkedConceptIds.has(String(c.id)))
+    .filter(c => !linked.has(String(c.id)))
     .map(c => ({ id: c.id, title: c.title }));
   return ok(call, `${orphans.length} concepto(s) huérfanos (sin relaciones).`, { orphans });
+}
+
+async function updateConcept(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const conceptRef = String(call.args.conceptId || call.args.id || call.args.title || '').trim();
+  if (!conceptRef) throw new Error('conceptId, id o title es requerido');
+  const state = await loadSemanticState(ctx);
+  const existing = resolveConcept(state, conceptRef);
+  const now = Date.now();
+  if (typeof call.args.title === 'string' && call.args.title.trim()) existing.title = call.args.title.trim();
+  if (typeof call.args.definition === 'string') existing.definition = call.args.definition.trim();
+  if (typeof call.args.formula === 'string') existing.formula = call.args.formula.trim();
+  if (typeof call.args.logicProfile === 'string') existing.logicProfile = call.args.logicProfile.trim();
+  if (typeof call.args.status === 'string') {
+    const s = call.args.status.trim();
+    if (['draft', 'validated', 'archived'].includes(s)) existing.status = s as typeof existing.status;
+  }
+  existing.updatedAt = now;
+  const saved = await saveSemanticState(ctx, state);
+  const concept = saved.concepts.find(c => c.id === existing.id) || null;
+  return ok(call, `Actualicé el concepto "${existing.title}".`, { concept });
+}
+
+async function deleteConcept(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const conceptRef = String(call.args.conceptId || call.args.id || call.args.title || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!conceptRef) throw new Error('conceptId, id o title es requerido');
+  const state = await loadSemanticState(ctx);
+  const target = resolveConcept(state, conceptRef);
+  const dependentRelations = state.relations.filter(r =>
+    String(r.conceptId) === target.id ||
+    String(r.sourceEntityId || '') === target.id ||
+    String(r.targetEntityId || '') === target.id
+  );
+  if (!confirmed) {
+    return confirm(
+      call,
+      `¿Eliminar concepto "${target.title}" (id ${target.id})? Se removerán también ${dependentRelations.length} relación(es) asociada(s).`,
+      { conceptId: target.id, dependentRelations: dependentRelations.length }
+    );
+  }
+  const dependentRelationIds = new Set(dependentRelations.map(r => r.id));
+  const newConcepts = state.concepts.filter(c => c.id !== target.id);
+  const newRelations = state.relations.filter(r => !dependentRelationIds.has(r.id));
+  const newFragments = state.fragments.filter(f => f.id !== target.sourceFragmentId);
+  await saveSemanticState(ctx, { ...state, concepts: newConcepts, relations: newRelations, fragments: newFragments });
+  return ok(call, `Eliminé concepto "${target.title}" y ${dependentRelations.length} relación(es).`, {
+    deleted: { id: target.id, title: target.title, relationsRemoved: dependentRelations.length }
+  });
+}
+
+async function deleteRelation(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const relationId = String(call.args.relationId || call.args.id || '').trim();
+  const confirmed = call.args.confirmed === true;
+  if (!relationId) throw new Error('relationId es requerido');
+  const state = await loadSemanticState(ctx);
+  const target = state.relations.find(r => r.id === relationId);
+  if (!target) throw new Error(`Relación no encontrada: ${relationId}`);
+  if (!confirmed) {
+    return confirm(call, `¿Eliminar relación ${target.relationType} (id ${target.id})?`, { relationId: target.id });
+  }
+  const newRelations = state.relations.filter(r => r.id !== target.id);
+  const newFragments = state.fragments.filter(f => f.id !== target.fragmentId);
+  await saveSemanticState(ctx, { ...state, relations: newRelations, fragments: newFragments });
+  return ok(call, `Eliminé relación ${target.relationType}.`, { deleted: { id: target.id, relationType: target.relationType } });
+}
+
+async function updateRelation(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const relationId = String(call.args.relationId || call.args.id || '').trim();
+  if (!relationId) throw new Error('relationId es requerido');
+  const newType = typeof call.args.relationType === 'string' ? call.args.relationType.trim() : null;
+  const newStatus = typeof call.args.status === 'string' ? call.args.status.trim() : null;
+  const state = await loadSemanticState(ctx);
+  const target = state.relations.find(r => r.id === relationId);
+  if (!target) throw new Error(`Relación no encontrada: ${relationId}`);
+  if (newType) target.relationType = newType as SemanticRelationType;
+  if (newStatus && ['draft', 'validated', 'archived'].includes(newStatus)) {
+    target.status = newStatus as typeof target.status;
+  }
+  target.updatedAt = Date.now();
+  await saveSemanticState(ctx, state);
+  return ok(call, `Actualicé relación ${target.relationType}.`, { relation: target });
 }
 
 async function mergeConcepts(call: AgentToolCall, ctx: AgentExecutionContext) {
@@ -271,10 +354,15 @@ export const SEMANTIC_TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_semantic_state: getSemanticState,
   list_concepts: listConcepts,
   define_concept: defineConcept,
+  update_concept: updateConcept,
+  delete_concept: deleteConcept,
   create_relation: createRelation,
+  update_relation: updateRelation,
+  delete_relation: deleteRelation,
+  find_orphaned_concepts: findOrphanedConcepts,
+  merge_concepts: mergeConcepts,
+  // Aliases legacy mantenidos para compatibilidad sin exponerlos al modelo:
   link_concepts: createRelation,
   list_glossary_entries: listGlossaryEntries,
-  search_glossary_entries: searchGlossaryEntries,
-  find_orphaned_concepts: findOrphanedConcepts,
-  merge_concepts: mergeConcepts
+  search_glossary_entries: searchGlossaryEntries
 };

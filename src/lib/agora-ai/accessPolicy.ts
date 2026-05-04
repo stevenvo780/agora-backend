@@ -100,7 +100,7 @@ export const AGENT_ACCESS_PROFILES: Record<Exclude<AgentAccessProfileId, 'custom
     id: 'developer',
     label: 'Desarrollador',
     shortLabel: 'Dev',
-    description: 'Acceso completo a tools, Git y worker. Las tools destructivas todavía piden confirmación explícita.',
+    description: 'Acceso completo a tools, Git y worker. Omite confirmaciones destructivas: úsalo solo cuando quieras control total.',
     capabilities: allCapabilities(true)
   }
 };
@@ -140,13 +140,21 @@ export function normalizeAgentAccessPolicy(
   const profileDefaults = profile === 'custom'
     ? fallback.capabilities
     : AGENT_ACCESS_PROFILES[profile].capabilities;
+  const toolPermissions = policy?.toolPermissions && typeof policy.toolPermissions === 'object'
+    ? Object.fromEntries(
+        Object.entries(policy.toolPermissions).filter((entry): entry is [string, boolean] => (
+          typeof entry[0] === 'string' && typeof entry[1] === 'boolean'
+        ))
+      )
+    : undefined;
 
   return {
     profile,
     capabilities: {
       ...profileDefaults,
       ...(policy?.capabilities || {})
-    }
+    },
+    ...(toolPermissions && Object.keys(toolPermissions).length > 0 ? { toolPermissions } : {})
   };
 }
 
@@ -247,13 +255,17 @@ const SEMANTIC_TOOLS = new Set([
   'get_semantic_state',
   'list_concepts',
   'define_concept',
+  'update_concept',
+  'delete_concept',
   'create_relation',
+  'update_relation',
+  'delete_relation',
+  'find_orphaned_concepts',
+  'merge_concepts',
+  // Aliases legacy aún ejecutables vía handler shim:
   'link_concepts',
   'list_glossary_entries',
-  'search_glossary_entries',
-  'semantic_search_workspace',
-  'find_orphaned_concepts',
-  'merge_concepts'
+  'search_glossary_entries'
 ]);
 
 const LOGIC_TOOLS = new Set([
@@ -358,13 +370,50 @@ export function getRequiredAgentCapability(call: AgentToolCall): AgentAccessCapa
   return null;
 }
 
+export function getAgentToolAccessState(
+  toolName: string,
+  policy?: Partial<AgentAccessPolicy>
+): {
+  enabled: boolean;
+  capability: AgentAccessCapability | null;
+  source: 'tool' | 'capability' | 'unrestricted';
+} {
+  const normalized = normalizeAgentAccessPolicy(policy);
+  const capability = getRequiredAgentCapability({ id: 'policy-check', name: toolName, args: {} });
+  const override = normalized.toolPermissions?.[toolName];
+  if (typeof override === 'boolean') {
+    return { enabled: override, capability, source: 'tool' };
+  }
+  if (!capability) {
+    return { enabled: true, capability: null, source: 'unrestricted' };
+  }
+  return { enabled: normalized.capabilities[capability] === true, capability, source: 'capability' };
+}
+
+export function isAgentToolAllowedByPolicy(
+  toolName: string,
+  policy?: Partial<AgentAccessPolicy>
+): boolean {
+  return getAgentToolAccessState(toolName, policy).enabled;
+}
+
 export function getAgentAccessDenial(
   call: AgentToolCall,
   policy?: Partial<AgentAccessPolicy>
 ) {
-  const capability = getRequiredAgentCapability(call);
-  if (!capability) return null;
   const normalized = normalizeAgentAccessPolicy(policy);
+  const capability = getRequiredAgentCapability(call);
+  const toolOverride = normalized.toolPermissions?.[call.name];
+  if (toolOverride === false) {
+    return {
+      capability,
+      profile: normalized.profile,
+      toolName: call.name,
+      message: `Tool bloqueada por permiso individual: ${call.name}.`
+    };
+  }
+  if (toolOverride === true) return null;
+  if (!capability) return null;
   if (normalized.capabilities[capability]) return null;
   return {
     capability,
