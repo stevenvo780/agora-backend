@@ -146,7 +146,15 @@ export async function GET(req: NextRequest, context: RouteContext) {
                 }
                 const snapData = { id: snap.id, ...snap.data() } as Record<string, unknown>;
                 const freshUrl = await maybeFreshUrl(id, snapData);
-                if (freshUrl) snapData.url = freshUrl;
+                if (freshUrl) {
+                    snapData.url = freshUrl;
+                } else if (typeof snapData.url === 'string'
+                    && /storage\.googleapis\.com\/[^/]*\.firebasestorage\.app\//.test(snapData.url)) {
+                    // El url histórico apunta a Firebase Storage legacy (caducado tras
+                    // migración a NAS/MinIO). Mejor no enviarlo: el cliente cae en
+                    // fallback en lugar de 400.
+                    delete snapData.url;
+                }
                 send({ type: 'snapshot', data: snapData });
             };
 
