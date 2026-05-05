@@ -455,6 +455,9 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
       break;
     }
     await emitStatus(`Consultando ${options.provider} (${iterations}/${MAX_AGENT_ITERATIONS})…`);
+    const availableTools = options.mode === 'agent'
+      ? toOpenAITools(options.executionContext.accessPolicy)
+      : [];
 
     const res = await fetchProviderWithRetry(providerConfig.label, providerConfig.endpoint, {
       method: 'POST',
@@ -466,9 +469,9 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
         model: options.model,
         messages,
         max_tokens: 8192,
-        ...(options.mode === 'agent'
+        ...(availableTools.length > 0
           ? {
-            tools: toOpenAITools(),
+            tools: availableTools,
             ...(providerConfig.supportsToolChoice ? { tool_choice: 'auto' } : {})
           }
           : {})
@@ -637,6 +640,9 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
       break;
     }
     await emitStatus(`Consultando ${options.provider} (${iterations}/${MAX_AGENT_ITERATIONS})…`);
+    const availableTools = options.mode === 'agent'
+      ? toAnthropicTools(options.executionContext.accessPolicy)
+      : [];
 
     const res = await fetchProviderWithRetry('Anthropic', 'https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -656,7 +662,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
           { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }
         ],
         messages,
-        ...(options.mode === 'agent' ? { tools: toAnthropicTools() } : {}),
+        ...(availableTools.length > 0 ? { tools: availableTools } : {}),
         ...(useNativeThinking
           ? { thinking: { type: 'enabled', budget_tokens: 10000 } }
           : {})
@@ -831,6 +837,9 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
       break;
     }
     await emitStatus(`Consultando ${options.provider} (${iterations}/${MAX_AGENT_ITERATIONS})…`);
+    const availableTools = options.mode === 'agent'
+      ? toGeminiTools(options.executionContext.accessPolicy)
+      : [];
 
     const res = await fetchProviderWithRetry(
       'Gemini',
@@ -842,7 +851,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
           generationConfig: { maxOutputTokens: 8192 },
-          ...(options.mode === 'agent' ? { tools: toGeminiTools() } : {})
+          ...(availableTools.length > 0 ? { tools: availableTools } : {})
         })
       },
       emitStatus

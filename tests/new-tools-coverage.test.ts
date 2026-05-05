@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AGORA_AGENT_TOOLS } from '../src/lib/agora-ai/toolDefinitions.ts';
-import { getRequiredAgentCapability } from '../src/lib/agora-ai/accessPolicy.ts';
+import { AGENT_ACCESS_PROFILES, getAgentAccessDenial, getRequiredAgentCapability } from '../src/lib/agora-ai/accessPolicy.ts';
 import { AGORA_AGENT_TOOL_REGISTRY_BY_NAME } from '../src/lib/agora-ai/toolRegistry.ts';
 
 const NEW_TOOLS_TIER_1 = [
@@ -71,6 +71,29 @@ test('todas las tools nuevas mapean a una capability (no quedan unmapped)', () =
     const cap = getRequiredAgentCapability({ id: 'test', name, args: {} });
     assert.notEqual(cap, null, `${name} no tiene capability — quedará SIN BLOQUEO incluso en perfiles restrictivos`);
   }
+});
+
+test('toolPermissions permite apagar o prender tools concretas sobre el perfil', () => {
+  const policy = {
+    profile: 'custom' as const,
+    capabilities: {
+      ...AGENT_ACCESS_PROFILES.read_only.capabilities,
+      documentsRead: false,
+      workerCommand: false
+    },
+    toolPermissions: {
+      read_document: true,
+      list_documents: false,
+      run_worker_command: true
+    }
+  };
+
+  assert.equal(getAgentAccessDenial({ id: 't1', name: 'read_document', args: {} }, policy), null);
+  assert.equal(getAgentAccessDenial({ id: 't2', name: 'run_worker_command', args: {} }, policy), null);
+  assert.match(
+    getAgentAccessDenial({ id: 't3', name: 'list_documents', args: {} }, policy)?.message ?? '',
+    /permiso individual/
+  );
 });
 
 test('admin tools requieren documentsWrite (cambios persistentes en workspace)', () => {

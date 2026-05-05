@@ -24,9 +24,16 @@ export type AgentAccessCapability =
 
 export type AgentAccessCapabilities = Record<AgentAccessCapability, boolean>;
 
+export type AgentToolPermissionMap = Record<string, boolean>;
+
 export interface AgentAccessPolicy {
   profile: AgentAccessProfileId;
   capabilities: AgentAccessCapabilities;
+  /**
+   * Overrides por herramienta. Undefined = hereda de la capability;
+   * true/false = permite/bloquea esa tool concreta.
+   */
+  toolPermissions?: AgentToolPermissionMap;
 }
 
 export interface ChatMessage {
