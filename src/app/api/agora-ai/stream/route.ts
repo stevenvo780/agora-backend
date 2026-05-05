@@ -8,9 +8,10 @@ import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 
 export const runtime = 'nodejs';
-// Vercel Pro permite hasta 900s; emitimos 'complete' 40s antes para evitar el cutoff.
-export const maxDuration = 800;
-const SOFT_BUDGET_MS = 760_000;
+// Cloud Run admite hasta 3600s (configurado en el servicio). Dejamos 100s
+// de margen para poder emitir 'complete' truncado antes del corte duro.
+export const maxDuration = 3500;
+const SOFT_BUDGET_MS = 3_400_000;
 
 const DEFAULT_MODELS: Record<Exclude<AIProvider, 'ollama'>, string> = {
   openai: 'gpt-4o-mini',
@@ -118,7 +119,7 @@ export async function POST(request: NextRequest) {
         // "stream terminó sin respuesta final".
         send({
           type: 'complete',
-          reply: 'La respuesta del agente fue truncada por límite de tiempo del servidor (~12 min). Intenta una solicitud más específica o divídela en pasos.',
+          reply: 'La respuesta del agente fue truncada por límite de tiempo del servidor (~57 min). Intenta una solicitud más específica o divídela en pasos.',
           agentRun: {
             mode: effectiveMode,
             provider,
