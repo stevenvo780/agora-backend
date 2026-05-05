@@ -231,7 +231,9 @@ export async function GET(req: NextRequest) {
             ? 'private, max-age=0, stale-while-revalidate=5'
             : 'no-store, no-cache, must-revalidate, proxy-revalidate';
 
-        return NextResponse.json({ docs, nextCursor }, { headers: { 'Cache-Control': cacheControl } });
+        const headers: Record<string, string> = { 'Cache-Control': cacheControl };
+        if (nextCursor) headers['X-Next-Cursor'] = nextCursor;
+        return NextResponse.json(docs, { headers });
     } catch (error: unknown) {
         console.error('Error listing documents:', getErrorMessage(error));
         return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
