@@ -201,12 +201,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             ...(contentHash ? { contentHash } : {})
         });
     } catch (error: unknown) {
-        const err = error as Error;
-        console.error('[documents/[id] PUT] error:', err?.message, err?.stack);
-        return NextResponse.json({
-            error: getErrorMessage(error),
-            detail: err?.stack?.split('\n').slice(0, 4).join(' | ')
-        }, { status: 500 });
+        console.error('[documents/[id] PUT] error', error);
+        return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
     }
 }
 

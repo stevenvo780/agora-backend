@@ -210,8 +210,9 @@ export async function POST(req: NextRequest, context: RouteContext) {
                         clearInterval(heartbeat);
                         controller.close();
                     } catch (e) {
+                        console.error('[git/commit] stream error', e);
                         const err = e as Error;
-                        send({ event: 'error', error: err.message, stack: err.stack?.split('\n').slice(0, 3).join(' | ') });
+                        send({ event: 'error', error: err.message });
                         clearInterval(heartbeat);
                         controller.close();
                     }
@@ -228,8 +229,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
             }
         });
     } catch (e) {
-        const err = e as Error;
-        console.error('[git/commit] error:', err?.message, err?.stack);
-        return NextResponse.json({ error: getErrorMessage(e), detail: err?.stack?.split('\n').slice(0, 3).join(' | ') }, { status: 500 });
+        console.error('[git/commit] error', e);
+        return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });
     }
 }

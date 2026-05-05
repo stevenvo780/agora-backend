@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
@@ -6,6 +7,38 @@ import { env } from '@/lib/env';
 
 const ADMIN_PASSWORD = env.ADMIN_PASSWORD();
 const ENABLE_ADMIN_ENDPOINTS = env.ENABLE_ADMIN_ENDPOINTS();
+
+function timingSafeStringEqual(provided: string, expected: string): boolean {
+  if (!expected) return false;
+  const providedBuf = Buffer.from(provided, 'utf8');
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const max = Math.max(providedBuf.length, expectedBuf.length);
+  const a = Buffer.alloc(max);
+  const b = Buffer.alloc(max);
+  providedBuf.copy(a);
+  expectedBuf.copy(b);
+  const equal = crypto.timingSafeEqual(a, b);
+  return equal && providedBuf.length === expectedBuf.length;
+}
+
+interface ActivateSubscriptionBody {
+  userId: string;
+  planId: PlanId;
+  durationMonths: number;
+}
+
+function parseActivateSubscriptionBody(raw: unknown): ActivateSubscriptionBody | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const userId = obj.userId;
+  if (typeof userId !== 'string' || userId.trim().length === 0) return null;
+  const planId = obj.planId;
+  if (typeof planId !== 'string' || !isPlanId(planId)) return null;
+  const rawDuration = obj.durationMonths ?? 1;
+  if (typeof rawDuration !== 'number' || !Number.isFinite(rawDuration) || !Number.isInteger(rawDuration)) return null;
+  if (rawDuration < 1 || rawDuration > 24) return null;
+  return { userId, planId, durationMonths: rawDuration };
+}
 
 /**
  * POST /api/admin/activate-subscription
@@ -23,20 +56,24 @@ export async function POST(req: NextRequest) {
 
   try {
     const authHeader = req.headers.get('x-admin-password') || '';
-    if (!ADMIN_PASSWORD || authHeader !== ADMIN_PASSWORD) {
+    if (!timingSafeStringEqual(authHeader, ADMIN_PASSWORD)) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { userId, planId, durationMonths = 1 } = body;
-
-    if (!userId || !planId) {
-      return NextResponse.json({ error: 'userId y planId son requeridos' }, { status: 400 });
+    let rawBody: unknown;
+    try {
+      rawBody = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Body inválido' }, { status: 400 });
     }
-
-    if (typeof planId !== 'string' || !isPlanId(planId)) {
-      return NextResponse.json({ error: `Plan inválido. Usar: ${PLAN_IDS.join(', ')}` }, { status: 400 });
+    const parsed = parseActivateSubscriptionBody(rawBody);
+    if (!parsed) {
+      return NextResponse.json(
+        { error: `Parámetros inválidos. userId requerido, planId en [${PLAN_IDS.join(', ')}], durationMonths entero entre 1 y 24.` },
+        { status: 400 }
+      );
     }
+    const { userId, planId, durationMonths } = parsed;
 
     const now = new Date();
     const endDate = new Date(now);

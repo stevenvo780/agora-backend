@@ -13,22 +13,17 @@ import {
 import { env } from '@/lib/env';
 import { verifyMercadoPagoWebhookSignature } from '@/lib/payments/mercadoPagoWebhookSignature';
 
-const mpAccessToken = env.MERCADOPAGO_ACCESS_TOKEN();
-const mpWebhookSecret = env.MERCADOPAGO_WEBHOOK_SECRET();
-
 /**
  * Verifica la firma de un webhook de MercadoPago.
  * MP firma `id:<dataId>;request-id:<requestId>;ts:<ts>;` con HMAC-SHA256.
  * Header `x-signature: ts=<ts>,v1=<hex>` y `x-request-id`.
  *
- * Política: si `MERCADOPAGO_WEBHOOK_SECRET` no está configurado en producción,
- * RECHAZAR (fail-closed). Sólo en dev/test se permite sin firma para tests
- * locales. Esto cierra el vector de DoS donde un atacante envía POSTs
- * fraudulentos que el handler tendría que validar contra la API real de MP.
+ * Política: si `MERCADOPAGO_WEBHOOK_SECRET` no está configurado, RECHAZAR
+ * (fail-closed) en cualquier entorno. El dev debe setear el secret local.
  */
-const verifyMpSignature = (req: NextRequest, dataId: string | number | undefined): boolean => {
+const verifyMpSignature = (req: NextRequest, secret: string, dataId: string | number | undefined): boolean => {
   return verifyMercadoPagoWebhookSignature({
-    secret: mpWebhookSecret,
+    secret,
     signatureHeader: req.headers.get('x-signature') ?? '',
     requestId: req.headers.get('x-request-id') ?? '',
     dataId
@@ -48,21 +43,18 @@ const logPaymentEvent = async (entry: Record<string, unknown>) => {
 
 export async function POST(req: NextRequest) {
   try {
+    const mpAccessToken = env.MERCADOPAGO_ACCESS_TOKEN();
+    const mpWebhookSecret = env.MERCADOPAGO_WEBHOOK_SECRET();
     const body = await req.json();
 
     // MercadoPago envía el tipo de notificación y el data.id
     const { type, data } = body;
 
-    if (!verifyMpSignature(req, data?.id)) {
-      const reason = !mpWebhookSecret && process.env.NODE_ENV === 'production'
-        ? 'webhook-secret-missing'
-        : 'bad-signature';
+    if (!verifyMpSignature(req, mpWebhookSecret, data?.id)) {
+      const reason = !mpWebhookSecret ? 'webhook-secret-missing' : 'bad-signature';
       console.warn('[mp/webhook] rechazado:', reason, 'paymentId=', data?.id);
       await logPaymentEvent({ kind: 'webhook-rejected', reason, dataId: data?.id ?? null });
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-    }
-    if (!mpWebhookSecret) {
-      console.warn('[mp/webhook] MERCADOPAGO_WEBHOOK_SECRET no configurado — modo dev permisivo');
     }
     await logPaymentEvent({ kind: 'webhook-received', type, dataId: data?.id ?? null });
 

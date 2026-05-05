@@ -32,7 +32,7 @@ async function saveSemanticState(ctx: AgentExecutionContext, state: SemanticWork
     ...state,
     updatedAt: Date.now()
   });
-  const clean = JSON.parse(JSON.stringify({
+  const clean: Record<string, unknown> = structuredClone({
     workspaceId: ctx.workspaceId,
     storageId,
     concepts: normalized.concepts,
@@ -40,8 +40,8 @@ async function saveSemanticState(ctx: AgentExecutionContext, state: SemanticWork
     relations: normalized.relations,
     updatedAt: normalized.updatedAt,
     updatedBy: ctx.uid
-  }));
-  clean.serverUpdatedAt = FieldValue.serverTimestamp();
+  });
+  clean['serverUpdatedAt'] = FieldValue.serverTimestamp();
   await adminDb.collection('workspaceSemanticStates').doc(storageId).set(clean, { merge: true });
   return normalized;
 }

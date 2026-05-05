@@ -200,23 +200,38 @@ export async function GET(req: NextRequest) {
 
         const limitParam = searchParams.get('limit');
         const offsetParam = searchParams.get('offset');
-        const limitVal = limitParam ? Math.min(Math.max(1, parseInt(limitParam, 10)), 1000) : 1000;
-        const snapshot = await q.limit(limitVal).get();
+        const cursorParam = searchParams.get('cursor');
+        const limitVal = limitParam ? Math.min(Math.max(1, parseInt(limitParam, 10)), 1000) : 200;
+
+        let paginatedQ = q;
+        if (cursorParam) {
+            const cursorSnap = await adminDb.collection('documents').doc(cursorParam).get();
+            if (cursorSnap.exists) {
+                paginatedQ = q.startAfter(cursorSnap);
+            }
+        }
+
+        const snapshot = await paginatedQ.limit(limitVal).get();
         let docs = snapshot.docs.map(doc => {
             const raw: Record<string, unknown> = { id: doc.id, ...(doc.data() as Record<string, unknown>) };
             normalizeDotfileLegacy(raw);
             return raw;
         });
-        if (offsetParam) {
+
+        if (offsetParam && !cursorParam) {
             const offsetVal = Math.max(0, parseInt(offsetParam, 10));
             docs = docs.slice(offsetVal);
         }
+
+        const nextCursor = snapshot.docs.length === limitVal
+            ? (snapshot.docs[snapshot.docs.length - 1]?.id ?? null)
+            : null;
 
         const cacheControl = isMetadataView
             ? 'private, max-age=0, stale-while-revalidate=5'
             : 'no-store, no-cache, must-revalidate, proxy-revalidate';
 
-        return NextResponse.json(docs, { headers: { 'Cache-Control': cacheControl } });
+        return NextResponse.json({ docs, nextCursor }, { headers: { 'Cache-Control': cacheControl } });
     } catch (error: unknown) {
         console.error('Error listing documents:', getErrorMessage(error));
         return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

@@ -112,8 +112,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
                 : 'Token no emitido (user ya existía). Genera uno desde el panel Forgejo si lo necesitas.'
         });
     } catch (e) {
-        const err = e as Error;
-        console.error('[workspaces/provision-git] error:', err?.message, err?.stack);
-        return NextResponse.json({ error: getErrorMessage(e), detail: err?.stack?.split('\n').slice(0, 4).join(' | ') }, { status: 500 });
+        console.error('[workspaces/provision-git] error', e);
+        return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });
     }
 }

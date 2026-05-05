@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
             .limit(2000)
             .get();
 
-        const items: Array<{
+        type WorkerListItem = {
             docId: string;
             name: string | null;
             folder: string | null;
@@ -65,40 +65,44 @@ export async function GET(req: NextRequest) {
             version: number | null;
             updatedAt: number | null;
             signedUrl: string | null;
-        }> = [];
+        };
 
-        for (const d of snap.docs) {
-            const parsed = parseDocumentRecord(d.id, d.data());
-            if (!parsed.ok) {
-                console.warn('[sync/worker-list] skipping invalid doc', d.id, parsed.error);
-                continue;
-            }
-            const doc = parsed.value;
-            if (doc.type === 'folder') continue;
-            if (!doc.storagePath) continue;
-            if (since > 0 && doc.updatedAtMs !== null && doc.updatedAtMs < since) continue;
+        const items = (
+            await Promise.all(
+                snap.docs.map(async (d): Promise<WorkerListItem | null> => {
+                    const parsed = parseDocumentRecord(d.id, d.data());
+                    if (!parsed.ok) {
+                        console.warn('[sync/worker-list] skipping invalid doc', d.id, parsed.error);
+                        return null;
+                    }
+                    const doc = parsed.value;
+                    if (doc.type === 'folder') return null;
+                    if (!doc.storagePath) return null;
+                    if (since > 0 && doc.updatedAtMs !== null && doc.updatedAtMs < since) return null;
 
-            const repoPath = buildRepoPath(doc.folder, doc.name);
-            let signedUrl: string | null = null;
-            try {
-                signedUrl = await presignGet(doc.storagePath, SIGNED_TTL);
-            } catch (e) {
-                console.warn('[sync/worker-list] presignGet failed for', doc.storagePath, getErrorMessage(e));
-            }
+                    const repoPath = buildRepoPath(doc.folder, doc.name);
+                    let signedUrl: string | null = null;
+                    try {
+                        signedUrl = await presignGet(doc.storagePath, SIGNED_TTL);
+                    } catch (e) {
+                        console.warn('[sync/worker-list] presignGet failed for', doc.storagePath, getErrorMessage(e));
+                    }
 
-            items.push({
-                docId: doc.id,
-                name: doc.name,
-                folder: doc.folder,
-                type: doc.type,
-                repoPath,
-                contentHash: doc.contentHash,
-                size: doc.size,
-                version: doc.version,
-                updatedAt: doc.updatedAtMs,
-                signedUrl
-            });
-        }
+                    return {
+                        docId: doc.id,
+                        name: doc.name,
+                        folder: doc.folder,
+                        type: doc.type,
+                        repoPath,
+                        contentHash: doc.contentHash,
+                        size: doc.size,
+                        version: doc.version,
+                        updatedAt: doc.updatedAtMs,
+                        signedUrl
+                    };
+                })
+            )
+        ).filter((item): item is WorkerListItem => item !== null);
 
         return NextResponse.json({
             workspaceId: wsParam,

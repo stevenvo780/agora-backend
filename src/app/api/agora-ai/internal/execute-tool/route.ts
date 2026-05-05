@@ -16,19 +16,18 @@ export const maxDuration = 60;
  * clientes ajenos llamen este endpoint directamente.
  */
 
-const INTERNAL_SECRET = resolveInternalToolSecret();
-
 interface ExecuteToolBody {
   call?: AgentToolCall;
   ctx?: Partial<AgentExecutionContext>;
 }
 
 export async function POST(request: NextRequest) {
-  if (!INTERNAL_SECRET) {
+  const internalSecret = resolveInternalToolSecret();
+  if (!internalSecret) {
     return NextResponse.json({ ok: false, error: 'BACKEND_INTERNAL_SECRET no configurado' }, { status: 500 });
   }
   const provided = request.headers.get('x-backend-internal-secret') || request.headers.get('x-hub-internal-secret') || '';
-  if (!isInternalToolSecretAuthorized(provided, INTERNAL_SECRET)) {
+  if (!isInternalToolSecretAuthorized(provided, internalSecret)) {
     return NextResponse.json({ ok: false, error: 'invalid_internal_secret' }, { status: 403 });
   }
 

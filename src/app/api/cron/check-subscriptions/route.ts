@@ -3,6 +3,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
 import { Plan, SubscriptionStatus } from '@/types/subscription';
 import { env } from '@/lib/env';
+import { timingSafeEqual } from 'node:crypto';
 
 /**
  * GET /api/cron/check-subscriptions
@@ -12,12 +13,23 @@ import { env } from '@/lib/env';
  *
  * Protegido por CRON_SECRET de Vercel (enviado automáticamente en el header Authorization).
  */
-export async function GET(req: NextRequest) {
-  // Verificar autenticación del cron
-  const authHeader = req.headers.get('authorization');
-  const cronSecret = env.CRON_SECRET();
+const safeBearerEqual = (authHeader: string, secret: string): boolean => {
+  const expected = `Bearer ${secret}`;
+  const a = Buffer.from(authHeader);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+};
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+export async function GET(req: NextRequest) {
+  const cronSecret = env.CRON_SECRET();
+  if (!cronSecret) {
+    console.warn('[Cron] CRON_SECRET not configured — refusing to run');
+    return NextResponse.json({ error: 'Cron not configured' }, { status: 503 });
+  }
+
+  const authHeader = req.headers.get('authorization') ?? '';
+  if (!safeBearerEqual(authHeader, cronSecret)) {
     console.warn('[Cron] Unauthorized cron attempt');
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

@@ -207,10 +207,13 @@ export const containsQueryTokens = (haystack: string, queryText: string) => {
 
 // ── Document loading/resolving ───────────────────────────────────
 
-export async function resolveDocumentId(rawId: string, ctx: AgentExecutionContext): Promise<string> {
+export async function resolveDocumentId(
+  rawId: string,
+  ctx: AgentExecutionContext
+): Promise<{ id: string; snapshot: FirebaseFirestore.DocumentSnapshot | null }> {
   const directSnap = await adminDb.collection('documents').doc(rawId).get();
   if (directSnap.exists) {
-    return rawId;
+    return { id: rawId, snapshot: directSnap };
   }
 
   const nameNorm = rawId.trim().toLowerCase();
@@ -228,7 +231,7 @@ export async function resolveDocumentId(rawId: string, ctx: AgentExecutionContex
 
   if (matches.length === 1) {
     const match = matches[0];
-    if (match) return match.id;
+    if (match) return { id: match.id, snapshot: null };
   }
 
   if (matches.length === 0) {
@@ -238,7 +241,7 @@ export async function resolveDocumentId(rawId: string, ctx: AgentExecutionContex
     });
     if (partial.length === 1) {
       const match = partial[0];
-      if (match) return match.id;
+      if (match) return { id: match.id, snapshot: null };
     }
     if (partial.length > 1) {
       const names = partial.slice(0, 5).map(d => `"${d.data().name}" (${d.id})`).join(', ');
@@ -255,8 +258,8 @@ export async function resolveDocumentId(rawId: string, ctx: AgentExecutionContex
 }
 
 export async function fetchDocumentForUser(documentId: string, ctx: AgentExecutionContext): Promise<StoredDocument> {
-  const resolvedId = await resolveDocumentId(documentId, ctx);
-  const snap = await adminDb.collection('documents').doc(resolvedId).get();
+  const { id: resolvedId, snapshot: cachedSnap } = await resolveDocumentId(documentId, ctx);
+  const snap = cachedSnap ?? await adminDb.collection('documents').doc(resolvedId).get();
   if (!snap.exists) {
     throw new Error('Documento no encontrado');
   }

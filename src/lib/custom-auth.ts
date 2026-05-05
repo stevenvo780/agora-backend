@@ -118,8 +118,8 @@ export const findUserByEmail = async (email: string): Promise<UserLookupResult |
     queries.push(usersRef.where('email', '==', rawEmail).limit(2));
   }
 
-  for (const query of queries) {
-    const snap = await query.get();
+  const results = await Promise.all(queries.map(q => q.get()));
+  for (const snap of results) {
     matchedSnapshots.push(...snap.docs);
   }
 

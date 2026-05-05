@@ -127,26 +127,23 @@ test('MercadoPago webhook signature valida manifest oficial', () => {
     secret,
     signatureHeader: `ts=${ts},v1=${v1}`,
     requestId,
-    dataId,
-    nodeEnv: 'production'
+    dataId
   }), true);
 });
 
-test('MercadoPago webhook falla cerrado en producción sin secret', () => {
+test('MercadoPago webhook falla cerrado sin secret', () => {
   assert.equal(verifyMercadoPagoWebhookSignature({
     secret: '',
     signatureHeader: '',
     requestId: '',
-    dataId: '123',
-    nodeEnv: 'production'
+    dataId: '123'
   }), false);
   assert.equal(verifyMercadoPagoWebhookSignature({
     secret: '',
     signatureHeader: '',
     requestId: '',
-    dataId: '123',
-    nodeEnv: 'test'
-  }), true);
+    dataId: '123'
+  }), false);
 });
 
 test('internal execute-tool secret prefiere BACKEND y rechaza vacío', () => {

@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { requireAuth } from '@/lib/server-auth';
 import { isForgejoConfigured, migrateRepo } from '@/lib/forgejo';
 import { getErrorMessage } from '@/lib/error-utils';
+import { assertPublicHttpUrl } from '@/lib/security/url-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,18 +44,16 @@ export async function POST(req: NextRequest) {
     const url = isStr(body.url) ? body.url.trim() : '';
     if (!url) return NextResponse.json({ error: 'url es requerida' }, { status: 400 });
 
-    let parsed: URL;
-    try { parsed = new URL(url); } catch {
-      return NextResponse.json({ error: 'URL inválida' }, { status: 400 });
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return NextResponse.json({ error: 'Sólo http/https' }, { status: 400 });
-    }
-    const blockedHost = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[0-1])\.|localhost$|0\.0\.0\.0$)/.test(parsed.hostname.toLowerCase());
-    if (blockedHost) {
-      return NextResponse.json({ error: 'Host privado bloqueado' }, { status: 400 });
+    try {
+      await assertPublicHttpUrl(url);
+    } catch (urlErr) {
+      return NextResponse.json({ error: getErrorMessage(urlErr) }, { status: 400 });
     }
 
+    // TOCTOU: Forgejo realiza su propio DNS lookup al hacer migrate; un atacante
+    // podría rebindear el dominio entre nuestra resolución y la suya. Forgejo no
+    // expone una forma de pasar la IP resuelta directamente, así que la ventana
+    // existe a nivel del backend de Forgejo.
     const repo = await migrateRepo({
       ownerUid: auth.uid,
       email: auth.email ?? undefined,

@@ -4,6 +4,7 @@ import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { runProviderConversation } from '@/lib/agora-ai/providerAdapters';
 import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
+import { getAgentHooksCached } from '@/lib/agora-ai/agent-hooks-cache';
 import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 
@@ -141,14 +142,7 @@ export async function POST(request: NextRequest) {
             ? await buildAgoraWorkspaceContext(workspaceId)
             : '';
 
-          // Cargar hooks del user (PreToolUse/PostToolUse/UserPromptSubmit)
-          // y mezclarlos con el system prompt antes de iniciar el provider.
-          let userHooks: { preToolUse?: string[]; postToolUse?: string[]; userPromptSubmit?: string[] } | undefined;
-          try {
-            const { adminDb } = await import('@/lib/firebase-admin');
-            const hooksSnap = await adminDb.collection('users').doc(auth.uid).collection('agentHooks').doc('config').get();
-            if (hooksSnap.exists) userHooks = hooksSnap.data() as typeof userHooks;
-          } catch { /* hooks opcionales */ }
+          const userHooks = await getAgentHooksCached(auth.uid) ?? undefined;
           const agentRun = await runProviderConversation({
             provider,
             apiKey,

@@ -5,7 +5,6 @@ interface VerifyMercadoPagoWebhookSignatureOptions {
   signatureHeader: string;
   requestId: string;
   dataId: string | number | undefined;
-  nodeEnv?: string;
 }
 
 export function buildMercadoPagoWebhookSignature(secret: string, dataId: string | number, requestId: string, ts: string) {
@@ -17,10 +16,12 @@ export function verifyMercadoPagoWebhookSignature({
   secret,
   signatureHeader,
   requestId,
-  dataId,
-  nodeEnv = process.env.NODE_ENV
+  dataId
 }: VerifyMercadoPagoWebhookSignatureOptions): boolean {
-  if (!secret) return nodeEnv !== 'production';
+  if (!secret) {
+    console.warn('[mp-webhook] No secret configured — rejecting all webhooks');
+    return false;
+  }
   if (!signatureHeader || !requestId || !dataId) return false;
 
   const parts = Object.fromEntries(

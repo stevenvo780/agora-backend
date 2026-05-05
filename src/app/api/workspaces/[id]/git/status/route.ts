@@ -133,8 +133,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
             items: items.sort((a, b) => (a.repoPath > b.repoPath ? 1 : -1))
         });
     } catch (e) {
-        const err = e as Error;
-        console.error('[git/status] error:', err?.message);
-        return NextResponse.json({ error: getErrorMessage(e), detail: err?.stack?.split('\n').slice(0, 3).join(' | ') }, { status: 500 });
+        console.error('[git/status] error', e);
+        return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });
     }
 }

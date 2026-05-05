@@ -34,7 +34,6 @@ export const getActivePlan = async (uid: string): Promise<ActivePlan> => {
     const data = snap.data() as UserSubscription;
     if (data.status === SubscriptionStatus.Active && data.endDate) {
         if (new Date(data.endDate) < new Date()) {
-            await ref.update({ status: SubscriptionStatus.Expired, updatedAt: new Date().toISOString() }).catch(() => undefined);
             return { planId: Plan.Free, status: SubscriptionStatus.Expired, endDate: data.endDate };
         }
     }
@@ -73,10 +72,12 @@ export const requirePlan = async (
  * Devuelve NextResponse 413 si excede, null si OK.
  */
 export const enforceStorageQuota = async (uid: string, addBytes: number): Promise<NextResponse | null> => {
-    const plan = await getActivePlan(uid);
+    const [plan, usedBytes] = await Promise.all([
+        getActivePlan(uid),
+        calculateOwnedStorageUsageBytes(uid),
+    ]);
     const limitMB = getStorageLimitMB(plan.planId);
     const limitBytes = limitMB * 1024 * 1024;
-    const usedBytes = await calculateOwnedStorageUsageBytes(uid);
     if (usedBytes + addBytes > limitBytes) {
         return NextResponse.json({
             error: 'storage-quota-exceeded',
