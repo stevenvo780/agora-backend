@@ -215,6 +215,12 @@ export async function GET(req: NextRequest) {
         let docs = snapshot.docs.map(doc => {
             const raw: Record<string, unknown> = { id: doc.id, ...(doc.data() as Record<string, unknown>) };
             normalizeDotfileLegacy(raw);
+            // Filtrar URLs Firebase Storage legacy caducados tras migración a NAS/MinIO.
+            // El cliente regenera signed URL fresco vía GET /api/documents/[id] al abrir.
+            if (typeof raw.url === 'string'
+                && /storage\.googleapis\.com\/[^/]*\.firebasestorage\.app\//.test(raw.url)) {
+                delete raw.url;
+            }
             return raw;
         });
 
