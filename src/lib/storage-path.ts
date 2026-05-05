@@ -53,7 +53,9 @@ export const buildStoragePath = (params: {
 }) => {
   const prefix = buildStoragePrefix(params.workspaceId, params.ownerId);
   const folder = normalizeFolderPath(params.folder ?? undefined);
-  return `${prefix}/${folder}/${params.fileName}`;
+  return folder
+    ? `${prefix}/${folder}/${params.fileName}`
+    : `${prefix}/${params.fileName}`;
 };
 
 export const getStorageBaseName = (storagePath: string) => {
