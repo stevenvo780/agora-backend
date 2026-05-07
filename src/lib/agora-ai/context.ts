@@ -1,11 +1,58 @@
 import { adminDb } from '@/lib/firebase-admin';
 
+const AGENT_DOC_LIMIT = 200;
+const CONTEXT_TTL_MS = 60_000;
+
+type CachedContext = { value: string; expiresAt: number };
+const contextCache = new Map<string, CachedContext>();
+
+const FAILED_PRECONDITION = 9 as const;
+
+const isFirestoreIndexError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === FAILED_PRECONDITION || code === 'failed-precondition') return true;
+  const msg = (error as { message?: unknown }).message;
+  return typeof msg === 'string' && /requires an index/i.test(msg);
+};
+
+const fetchDocsSnapshot = async (workspaceId: string): Promise<FirebaseFirestore.QuerySnapshot | null> => {
+  const base = adminDb.collection('documents').where('workspaceId', '==', workspaceId);
+  try {
+    return await base.orderBy('updatedAt', 'desc').limit(AGENT_DOC_LIMIT).get();
+  } catch (err) {
+    if (isFirestoreIndexError(err)) {
+      console.error(
+        '[agora-ai/context] Composite index missing for workspaceId+updatedAt. ' +
+        'Create it via:\n' +
+        '  gcloud firestore indexes composite create \\\n' +
+        '    --collection-group=documents \\\n' +
+        '    --field-config=field-path=workspaceId,order=ascending \\\n' +
+        '    --field-config=field-path=updatedAt,order=descending'
+      );
+      try {
+        return await base.limit(AGENT_DOC_LIMIT).get();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+};
+
 export async function buildAgoraWorkspaceContext(workspaceId: string): Promise<string> {
+  // Cache server-side por workspaceId con TTL corto. Misma sesión del agente
+  // tiende a reusar el contexto; sin cache cada turno re-pega 200 docs a
+  // Firestore.
+  const cached = contextCache.get(workspaceId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const parts: string[] = [];
 
-  // Run both Firestore queries in parallel to halve latency
   const [docsResult, semResult] = await Promise.allSettled([
-    adminDb.collection('documents').where('workspaceId', '==', workspaceId).limit(30).get(),
+    fetchDocsSnapshot(workspaceId),
     adminDb.collection('workspaceSemanticStates').doc(workspaceId).get()
   ]);
 
@@ -13,17 +60,14 @@ export async function buildAgoraWorkspaceContext(workspaceId: string): Promise<s
     const docsSnap = docsResult.status === 'fulfilled' ? docsResult.value : null;
     if (docsSnap && !docsSnap.empty) {
       type FireDoc = { id: string } & Record<string, unknown>;
-      const textDocs = docsSnap.docs
-        .map(d => ({ id: d.id, ...d.data() }) as FireDoc)
-        .filter(d => d.type === 'text');
+      const allDocs = docsSnap.docs.map(d => ({ id: d.id, ...d.data() }) as FireDoc);
+      const textDocs = allDocs.filter(d => d.type === 'text');
 
-      // Extract folder names from documents
       const folderNames = new Set<string>();
-      docsSnap.docs.forEach(d => {
-        const data = d.data() as Record<string, unknown>;
-        if (typeof data.folder === 'string' && data.folder) folderNames.add(data.folder);
-        if (data.type === 'folder' && typeof data.name === 'string') folderNames.add(data.name);
-      });
+      for (const d of allDocs) {
+        if (typeof d.folder === 'string' && d.folder) folderNames.add(d.folder);
+        if (d.type === 'folder' && typeof d.name === 'string') folderNames.add(d.name);
+      }
 
       if (folderNames.size > 0) {
         parts.push('## Carpetas del workspace');
@@ -34,10 +78,8 @@ export async function buildAgoraWorkspaceContext(workspaceId: string): Promise<s
       }
 
       if (textDocs.length > 0) {
-        // Only include document titles (not content) to keep prompt short
-        // and force the agent to use read_document for actual content
-        parts.push('## Documentos disponibles en el workspace');
-        parts.push('(Usa `read_document` para leer el contenido de cualquiera de estos documentos)\n');
+        parts.push(`## Documentos disponibles en el workspace (${textDocs.length}${docsSnap.size === AGENT_DOC_LIMIT ? `, mostrando los ${AGENT_DOC_LIMIT} más recientes` : ''})`);
+        parts.push('(Usa `read_document` para leer el contenido. Filtra por carpeta o nombre antes.)\n');
         for (const doc of textDocs) {
           const folder = doc.folder ? ` [carpeta: ${String(doc.folder)}]` : '';
           parts.push(`- ${String(doc.name || 'Sin título')} (ID: ${doc.id})${folder}`);
@@ -76,6 +118,12 @@ export async function buildAgoraWorkspaceContext(workspaceId: string): Promise<s
     // best-effort context
   }
 
-  if (parts.length === 0) return '';
-  return `# Contexto del workspace Agora\n\n${parts.join('\n')}`;
+  const value = parts.length === 0 ? '' : `# Contexto del workspace Agora\n\n${parts.join('\n')}`;
+  contextCache.set(workspaceId, { value, expiresAt: Date.now() + CONTEXT_TTL_MS });
+  return value;
+}
+
+export function invalidateAgoraWorkspaceContext(workspaceId?: string): void {
+  if (workspaceId) contextCache.delete(workspaceId);
+  else contextCache.clear();
 }

@@ -19,6 +19,7 @@ import { isNasConfigured, putObject, moveObject, deleteObject, presignGet, getOb
 import { emitPing } from '@/lib/nas-events';
 import { parseDocumentUpdatePayload } from '@agora/contracts';
 import { isDotfileName } from '@agora/contracts';
+import { computeSearchableContent } from '@/lib/search/searchable-content';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -152,6 +153,12 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             updateData.version = baseVersion + 1;
             updateData.syncState = 'synced';
             updateData.lastWriter = auth.uid;
+
+            // searchableContent denormalizado: re-compute en cada autosave.
+            // Si el content viene vacío, borrar el campo para no dejar stale.
+            const newContent = body.content ?? '';
+            const searchable = computeSearchableContent(newContent);
+            updateData.searchableContent = searchable.length > 0 ? searchable : FieldValue.delete();
         }
         if (typeof body.name === 'string') updateData.name = body.name;
         if (typeof body.type === 'string') updateData.type = body.type;

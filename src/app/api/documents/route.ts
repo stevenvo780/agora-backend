@@ -18,6 +18,7 @@ import { mockCreateDoc, mockListDocs } from '@/lib/insecure-mock-store';
 import { isNasConfigured, putObject } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
 import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
+import { computeSearchableContent } from '@/lib/search/searchable-content';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -120,6 +121,13 @@ export async function POST(req: NextRequest) {
         if (size !== null) docData.size = size;
         if (url && finalStoragePath) docData.url = url;
 
+        // searchableContent denormalizado para que /api/search/semantic
+        // pueda rankear sin hidratar MinIO por cada keystroke.
+        if (docType !== DocumentType.File && typeof content === 'string' && content.length > 0) {
+            const searchable = computeSearchableContent(content);
+            if (searchable) docData.searchableContent = searchable;
+        }
+
         const ref = await adminDb.collection('documents').add(docData);
 
         await emitPing({
@@ -201,7 +209,12 @@ export async function GET(req: NextRequest) {
         const limitParam = searchParams.get('limit');
         const offsetParam = searchParams.get('offset');
         const cursorParam = searchParams.get('cursor');
-        const limitVal = limitParam ? Math.min(Math.max(1, parseInt(limitParam, 10)), 1000) : 200;
+        // Default histórico era 200 sin que el cliente paginara → workspaces
+        // como Filosofia de la Neurologia (~993+ docs) tenían archivos
+        // invisibles en el sidebar tras los primeros 200 (bug 2026-05-06).
+        // Combinado con X-Next-Cursor bloqueado por CORS, paginar era
+        // imposible. Default 5000 cubre todos los workspaces actuales.
+        const limitVal = limitParam ? Math.min(Math.max(1, parseInt(limitParam, 10)), 10000) : 5000;
 
         let paginatedQ = q;
         if (cursorParam) {

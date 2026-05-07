@@ -34,6 +34,13 @@ app.use(cors({
     'X-Cron-Secret',
     'X-Signature',
     'X-Request-Id'
+  ],
+  // Sin esto el browser bloqueaba el header X-Next-Cursor → cliente no
+  // podía paginar y los archivos pasados los primeros 1000 quedaban
+  // invisibles. Bug raíz "no aparece en jerarquía" 2026-05-06.
+  exposedHeaders: [
+    'X-Next-Cursor',
+    'X-Request-Id'
   ]
 }));
 

@@ -1,9 +1,16 @@
 import { SEARCH_KIND_BADGES, SearchKind, type SearchResultItem, type SearchResultKind, type SearchSourceDocument } from '@/lib/search/types';
+import { buildSignalCacheKey, signalCache } from '@/lib/search/signal-cache';
 
 export interface SearchableDocument extends SearchSourceDocument {
   content?: string;
   createdAt?: unknown;
 }
+
+type CachedSignals = {
+  authors: string[];
+  works: string[];
+  concepts: string[];
+};
 
 type SearchTerms = {
   query: string;
@@ -248,8 +255,7 @@ const extractSnippet = (content: string, terms: SearchTerms) => {
   return `${prefix}${plain.slice(start, end).trim()}${suffix}`;
 };
 
-const extractSignals = (doc: SearchableDocument, terms: SearchTerms): ExtractedSignals => {
-  const content = typeof doc.content === 'string' ? doc.content : '';
+const computeRawSignals = (content: string): CachedSignals => {
   const frontmatter = extractFrontmatter(content);
 
   const authors = unique([
@@ -268,10 +274,27 @@ const extractSignals = (doc: SearchableDocument, terms: SearchTerms): ExtractedS
     ...extractInlineTags(content)
   ]).slice(0, 8);
 
+  return { authors, works, concepts };
+};
+
+const getCachedSignals = (doc: SearchableDocument, content: string): CachedSignals => {
+  const key = buildSignalCacheKey(doc.id, doc.updatedAt);
+  // 'novers' branch (sin updatedAt) — saltamos cache para no contaminar.
+  if (key.endsWith('::novers')) return computeRawSignals(content);
+  const cached = signalCache.get(key) as CachedSignals | undefined;
+  if (cached) return cached;
+  const fresh = computeRawSignals(content);
+  signalCache.set(key, fresh);
+  return fresh;
+};
+
+const extractSignals = (doc: SearchableDocument, terms: SearchTerms): ExtractedSignals => {
+  const content = typeof doc.content === 'string' ? doc.content : '';
+  const cached = getCachedSignals(doc, content);
   return {
-    authors,
-    works,
-    concepts,
+    authors: cached.authors,
+    works: cached.works,
+    concepts: cached.concepts,
     snippet: extractSnippet(content, terms)
   };
 };
