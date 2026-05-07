@@ -9,7 +9,7 @@ import { buildStoragePath, sanitizeFileName, ensureTextFileName } from '@/lib/st
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { isNasConfigured, putObject, presignGet } from '@/lib/nas-storage';
-import { emitPing } from '@/lib/nas-events';
+import { createDocumentBlob } from '@/lib/documents/writeDocumentBlob';
 
 export const runtime = 'nodejs';
 
@@ -89,26 +89,15 @@ export async function POST(req: NextRequest) {
                 folder,
                 fileName: mdName
             });
-            const { contentHash, size } = await putObject(mdStoragePath, conversion.markdown, {
-                contentType: 'text/markdown',
-                metadata: { 'agora-source': 'convert-md', 'agora-owner': ownerId }
-            });
 
-            const docRef = await adminDb.collection('documents').add({
+            const docRef = adminDb.collection('documents').doc();
+            const initialDocData: Record<string, unknown> = {
                 name: conversion.suggestedName,
                 type: DocumentType.Text,
                 mimeType: 'text/markdown',
                 ownerId,
                 workspaceId,
                 folder,
-                storagePath: mdStoragePath,
-                storageBackend: 'minio',
-                contentHash,
-                size,
-                version: 1,
-                baseVersion: 0,
-                syncState: 'synced',
-                lastWriter: ownerId,
                 sourceName: file.name,
                 sourceMimeType: file.type || null,
                 sourceStoragePath,
@@ -116,18 +105,20 @@ export async function POST(req: NextRequest) {
                 sourceFormat: conversion.sourceFormat,
                 createdAt: FieldValue.serverTimestamp(),
                 updatedAt: FieldValue.serverTimestamp()
-            });
+            };
 
-            await emitPing({
-                scope: 'document',
+            const result = await createDocumentBlob({
+                docRef,
+                content: conversion.markdown,
                 workspaceId,
-                userId: ownerId,
-                docId: docRef.id,
-                path: mdStoragePath,
-                version: 1,
-                contentHash,
-                sender: ownerId
-            }).catch(() => undefined);
+                ownerId,
+                storagePath: mdStoragePath,
+                contentType: 'text/markdown',
+                source: 'convert-md',
+                writerId: ownerId,
+                initialDocData,
+                emitPingPayload: { userId: ownerId }
+            });
 
             createdDoc = {
                 id: docRef.id,
@@ -139,9 +130,9 @@ export async function POST(req: NextRequest) {
                 folder,
                 storagePath: mdStoragePath,
                 storageBackend: 'minio',
-                contentHash,
-                size,
-                version: 1,
+                contentHash: result.contentHash,
+                size: result.size,
+                version: result.version,
                 sourceName: file.name,
                 sourceMimeType: file.type || null,
                 sourceStoragePath,

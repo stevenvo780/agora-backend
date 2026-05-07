@@ -13,6 +13,7 @@ import {
   type StoredDocument, type StoredSnippet, type StoredBoardColumn, type StoredBoardCard
 } from './shared';
 import { EMPTY_SEMANTIC_WORKSPACE_STATE } from '@/lib/semantic/workspace-state';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
@@ -367,7 +368,6 @@ async function createDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
     name: title,
     type,
     folder,
-    content: type === DocumentType.Folder ? '' : content,
     mimeType: type === DocumentType.Folder ? null : 'text/markdown',
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -375,9 +375,12 @@ async function createDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
     lastUpdatedBy: ctx.uid
   };
 
-  const ref = await adminDb.collection('documents').add(payload);
-  const storagePath = type === DocumentType.Text
-    ? await syncTextDocumentToStorage({
+  const ref = adminDb.collection('documents').doc();
+  if (type === DocumentType.Folder) {
+    await ref.set(payload);
+  } else {
+    await ref.set(payload);
+    await syncTextDocumentToStorage({
       id: ref.id,
       name: title,
       content,
@@ -386,11 +389,11 @@ async function createDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
       workspaceId: ctx.workspaceId,
       ownerId: ctx.uid,
       mimeType: 'text/markdown'
-    }, content)
-    : null;
-
-  if (storagePath) {
-    await ref.update({ storagePath });
+    }, content, {
+      docRef: ref,
+      source: 'agent-create',
+      writerId: ctx.uid
+    });
   }
 
   return ok(
@@ -435,7 +438,12 @@ async function restoreDocument(call: AgentToolCall, ctx: AgentExecutionContext) 
       ownerId: typeof snapshot.ownerId === 'string' ? snapshot.ownerId : ctx.uid,
       mimeType: typeof snapshot.mimeType === 'string' ? snapshot.mimeType : 'text/markdown',
       storagePath: typeof snapshot.storagePath === 'string' ? snapshot.storagePath : undefined
-    }, content);
+    }, content, {
+      docRef: ref,
+      source: 'agent-restore',
+      writerId: ctx.uid,
+      extraUpdate: { restoredBy: ctx.uid }
+    });
   }
   return ok(call, `Restauré "${String(snapshot.name || ref.id)}".`, { documentId: ref.id });
 }
@@ -444,9 +452,6 @@ async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
-  // Hidratamos el contenido REAL para el snapshot de rollback — si solo
-  // guardáramos doc.content (Firestore cache) el rollback restauraría una
-  // versión obsoleta, no la última en MinIO.
   const hydratedPrevious = await loadDocumentFullContent(doc);
   const previousSnapshot = {
     name: doc.name || 'Sin título',
@@ -461,24 +466,23 @@ async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 
   const title = typeof call.args.title === 'string' ? call.args.title.trim() : doc.name || 'Sin título';
   const content = typeof call.args.content === 'string' ? call.args.content : hydratedPrevious.content;
-  const updateData: Record<string, unknown> = {
-    name: title,
-    content,
-    updatedAt: FieldValue.serverTimestamp(),
-    lastUpdatedBy: ctx.uid
-  };
-  const storagePath = await syncTextDocumentToStorage({
+  const docRef = adminDb.collection('documents').doc(doc.id);
+  const docVersionField = (doc as unknown as { version?: unknown }).version;
+  const baseVersion = typeof docVersionField === 'number' ? docVersionField : 0;
+  await syncTextDocumentToStorage({
     ...doc,
     name: title,
     content,
     ownerId: doc.ownerId || ctx.uid,
     workspaceId: doc.workspaceId || ctx.workspaceId,
     mimeType: doc.mimeType || 'text/markdown'
-  }, content);
-  if (storagePath) {
-    updateData.storagePath = storagePath;
-  }
-  await adminDb.collection('documents').doc(doc.id).update(updateData);
+  }, content, {
+    docRef,
+    source: 'agent-update',
+    writerId: ctx.uid,
+    baseVersion,
+    extraUpdate: { name: title, lastUpdatedBy: ctx.uid }
+  });
 
   return ok(call, `Actualicé "${title}".`, {
     document: {
@@ -557,6 +561,7 @@ async function deleteDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 
   await adminDb.collection('documents').doc(doc.id).delete();
   await maybeDeleteStorageObject(doc.storagePath, doc.id);
+  invalidateAgoraWorkspaceContext(doc.workspaceId || ctx.workspaceId);
 
   return ok(call, `Eliminé "${doc.name || 'Sin título'}".`, {
     document: { id: doc.id, name: doc.name || 'Sin título' }
@@ -936,6 +941,7 @@ async function deleteFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   if (cascade) {
     void Promise.all(childDocs.map(c => maybeDeleteStorageObject(c.storagePath, c.id))).catch(() => undefined);
   }
+  invalidateAgoraWorkspaceContext(ctx.workspaceId);
 
   return ok(call, `Eliminé la carpeta "${folderPath}"${cascade ? ` y ${childDocs.length} documento(s)` : ''}.`, {
     folderPath, foldersDeleted: folderDocs.length, documentsDeleted: cascade ? childDocs.length : 0

@@ -5,7 +5,7 @@
  */
 import { env } from '@/lib/env';
 import { adminDb } from '@/lib/firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
+import { FieldValue, FieldPath } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
@@ -15,10 +15,10 @@ import { buildStoragePath, ensureTextFileName } from '@/lib/storage-path';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { mockCreateDoc, mockListDocs } from '@/lib/insecure-mock-store';
-import { isNasConfigured, putObject } from '@/lib/nas-storage';
-import { emitPing } from '@/lib/nas-events';
+import { isNasConfigured } from '@/lib/nas-storage';
 import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
-import { computeSearchableContent } from '@/lib/search/searchable-content';
+import { createDocumentBlob } from '@/lib/documents/writeDocumentBlob';
+import { decodeDocumentsCursor, encodeDocumentsCursor } from '@/lib/documents/cursor';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -70,9 +70,6 @@ export async function POST(req: NextRequest) {
         }
 
         let finalStoragePath = storagePath ?? undefined;
-        let contentHash: string | null = null;
-        let size: number | null = null;
-
         if (docType !== DocumentType.File) {
             const fname = ensureTextFileName(docName);
             if (!finalStoragePath) {
@@ -83,71 +80,73 @@ export async function POST(req: NextRequest) {
                     fileName: fname
                 });
             }
-            if (content !== null) {
-                const incomingBytes = Buffer.byteLength(content, 'utf8');
-                const quotaResp = await enforceStorageQuota(ownerId, incomingBytes);
-                if (quotaResp) return quotaResp;
-                const ext = (finalStoragePath.match(/\.[^./]+$/)?.[0] ?? '').toLowerCase();
-                const ct = ext === '.md' || ext === '.markdown'
-                    ? 'text/markdown'
-                    : (mimeType ?? 'text/plain');
-                const out = await putObject(finalStoragePath, content, {
-                    contentType: ct,
-                    metadata: { 'agora-source': 'api-create', 'agora-owner': ownerId }
-                });
-                contentHash = out.contentHash;
-                size = out.size;
-            }
         }
 
-        const docData: Record<string, unknown> = {
+        const baseDocData: Record<string, unknown> = {
             name: docName,
             type: docType,
             mimeType: mimeType ?? null,
             ownerId,
             workspaceId: resolvedWorkspaceId,
             folder: normalizedFolder,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp()
+        };
+        if (order !== null) baseDocData.order = order;
+        if (url && finalStoragePath) baseDocData.url = url;
+
+        const docRef = adminDb.collection('documents').doc();
+
+        if (docType !== DocumentType.File && finalStoragePath && content !== null) {
+            const incomingBytes = Buffer.byteLength(content, 'utf8');
+            const quotaResp = await enforceStorageQuota(ownerId, incomingBytes);
+            if (quotaResp) return quotaResp;
+            const ext = (finalStoragePath.match(/\.[^./]+$/)?.[0] ?? '').toLowerCase();
+            const contentType = ext === '.md' || ext === '.markdown'
+                ? 'text/markdown'
+                : (mimeType ?? 'text/plain');
+
+            const result = await createDocumentBlob({
+                docRef,
+                content,
+                workspaceId: resolvedWorkspaceId,
+                ownerId,
+                storagePath: finalStoragePath,
+                contentType,
+                source: 'api-create',
+                writerId: ownerId,
+                initialDocData: baseDocData,
+                emitPingPayload: { userId: ownerId }
+            });
+
+            return NextResponse.json({
+                id: docRef.id,
+                status: 'success',
+                storagePath: finalStoragePath,
+                storageBackend: 'minio',
+                version: result.version,
+                contentHash: result.contentHash
+            });
+        }
+
+        const fallbackData: Record<string, unknown> = {
+            ...baseDocData,
             storageBackend: 'minio',
             version: 1,
             baseVersion: 0,
             syncState: 'synced',
-            lastWriter: ownerId,
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp()
+            lastWriter: ownerId
         };
-        if (order !== null) docData.order = order;
-        if (finalStoragePath) docData.storagePath = finalStoragePath;
-        if (contentHash) docData.contentHash = contentHash;
-        if (size !== null) docData.size = size;
-        if (url && finalStoragePath) docData.url = url;
-
-        // searchableContent denormalizado para que /api/search/semantic
-        // pueda rankear sin hidratar MinIO por cada keystroke.
-        if (docType !== DocumentType.File && typeof content === 'string' && content.length > 0) {
-            const searchable = computeSearchableContent(content);
-            if (searchable) docData.searchableContent = searchable;
-        }
-
-        const ref = await adminDb.collection('documents').add(docData);
-
-        await emitPing({
-            scope: 'document',
-            workspaceId: resolvedWorkspaceId,
-            userId: ownerId,
-            docId: ref.id,
-            path: finalStoragePath ?? null,
-            version: 1,
-            contentHash,
-            sender: ownerId
-        }).catch(() => undefined);
+        if (finalStoragePath) fallbackData.storagePath = finalStoragePath;
+        await docRef.set(fallbackData);
 
         return NextResponse.json({
-            id: ref.id,
+            id: docRef.id,
             status: 'success',
             storagePath: finalStoragePath,
             storageBackend: 'minio',
             version: 1,
-            contentHash
+            contentHash: null
         });
     } catch (error: unknown) {
         console.error('Error creating document:', getErrorMessage(error));
@@ -209,30 +208,36 @@ export async function GET(req: NextRequest) {
         const limitParam = searchParams.get('limit');
         const offsetParam = searchParams.get('offset');
         const cursorParam = searchParams.get('cursor');
-        // Default histórico era 200 sin que el cliente paginara → workspaces
-        // como Filosofia de la Neurologia (~993+ docs) tenían archivos
-        // invisibles en el sidebar tras los primeros 200 (bug 2026-05-06).
-        // Combinado con X-Next-Cursor bloqueado por CORS, paginar era
-        // imposible. Default 5000 cubre todos los workspaces actuales.
         const limitVal = limitParam ? Math.min(Math.max(1, parseInt(limitParam, 10)), 10000) : 5000;
 
-        let paginatedQ = q;
+        const orderedQ = q.orderBy('updatedAt', 'desc').orderBy(FieldPath.documentId(), 'desc');
+        let paginatedQ: FirebaseFirestore.Query = orderedQ;
         if (cursorParam) {
-            const cursorSnap = await adminDb.collection('documents').doc(cursorParam).get();
-            if (cursorSnap.exists) {
-                paginatedQ = q.startAfter(cursorSnap);
+            const cursor = decodeDocumentsCursor(cursorParam);
+            if (cursor) {
+                const cursorSnap = await adminDb.collection('documents').doc(cursor.id).get();
+                if (cursorSnap.exists) {
+                    paginatedQ = orderedQ.startAfter(cursorSnap);
+                } else {
+                    const cursorTs = new Date(cursor.updatedAtMs);
+                    paginatedQ = orderedQ.startAfter(cursorTs, cursor.id);
+                }
             }
         }
 
         const snapshot = await paginatedQ.limit(limitVal).get();
+        let lastUpdatedMs: number | null = null;
         let docs = snapshot.docs.map(doc => {
-            const raw: Record<string, unknown> = { id: doc.id, ...(doc.data() as Record<string, unknown>) };
+            const data = doc.data() as Record<string, unknown>;
+            const raw: Record<string, unknown> = { id: doc.id, ...data };
             normalizeDotfileLegacy(raw);
-            // Filtrar URLs Firebase Storage legacy caducados tras migración a NAS/MinIO.
-            // El cliente regenera signed URL fresco vía GET /api/documents/[id] al abrir.
             if (typeof raw.url === 'string'
                 && /storage\.googleapis\.com\/[^/]*\.firebasestorage\.app\//.test(raw.url)) {
                 delete raw.url;
+            }
+            const updatedAt = data.updatedAt as { toMillis?: () => number } | undefined;
+            if (updatedAt && typeof updatedAt.toMillis === 'function') {
+                lastUpdatedMs = updatedAt.toMillis();
             }
             return raw;
         });
@@ -242,8 +247,9 @@ export async function GET(req: NextRequest) {
             docs = docs.slice(offsetVal);
         }
 
-        const nextCursor = snapshot.docs.length === limitVal
-            ? (snapshot.docs[snapshot.docs.length - 1]?.id ?? null)
+        const lastDoc = snapshot.docs[snapshot.docs.length - 1];
+        const nextCursor = snapshot.docs.length === limitVal && lastDoc && lastUpdatedMs !== null
+            ? encodeDocumentsCursor({ updatedAtMs: lastUpdatedMs, id: lastDoc.id })
             : null;
 
         const cacheControl = isMetadataView

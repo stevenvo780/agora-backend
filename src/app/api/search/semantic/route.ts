@@ -77,13 +77,13 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       if (isFirestoreIndexError(err)) {
         const msg = getErrorMessage(err);
+        const isPersonal = isPersonalWorkspaceId(workspaceId);
         console.error(
-          '[search/semantic] Composite index missing for workspaceId+updatedAt. ' +
-          'Create it from the URL in the original Firestore error or via gcloud:\n' +
-          '  gcloud firestore indexes composite create \\\n' +
-          '    --collection-group=documents \\\n' +
-          '    --field-config=field-path=workspaceId,order=ascending \\\n' +
-          '    --field-config=field-path=updatedAt,order=descending\n' +
+          '[search/semantic] missing composite index, returning degraded result (no orderBy). ' +
+          (isPersonal
+            ? 'Required index: documents (ownerId ASC, workspaceId ASC, updatedAt DESC). '
+            : 'Required index: documents (workspaceId ASC, updatedAt DESC). ') +
+          'Deploy con: firebase deploy --only firestore:indexes --project udea-filosofia. ' +
           'Original error: ' + msg
         );
         // Fallback sin orderBy para no devolver 500 al usuario.

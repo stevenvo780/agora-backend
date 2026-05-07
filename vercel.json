@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/drain-outbox",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/check-subscriptions",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/compact-sync-events",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

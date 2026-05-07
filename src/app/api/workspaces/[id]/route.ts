@@ -1,7 +1,7 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { presignGet, putObject, getObjectBuffer, copyObject, getNasClient, getNasBucket } from '@/lib/nas-storage';
 import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
-import { FieldValue, type CollectionReference, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { FieldValue, type CollectionReference, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isAdminUser, requireAuth, invalidateMembershipCache } from '@/lib/server-auth';
@@ -13,6 +13,7 @@ import { DocumentType } from '@/types/documents';
 import { invalidateStorageUsageCache } from '@/lib/storage-usage';
 import { deleteForgejoRepo, isForgejoConfigured } from '@/lib/forgejo';
 import { emitPing } from '@/lib/nas-events';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
 const deleteCollectionInBatches = async (collectionRef: CollectionReference, batchLimit = 400) => {
   let lastDoc: QueryDocumentSnapshot | null = null;
@@ -33,6 +34,28 @@ const deleteCollectionInBatches = async (collectionRef: CollectionReference, bat
     if (snapshot.size < batchLimit) break;
     lastDoc = snapshot.docs[snapshot.docs.length - 1];
   }
+};
+
+const deleteQueryInBatches = async (baseQuery: Query, batchLimit = 400): Promise<number> => {
+  let total = 0;
+  let lastDoc: QueryDocumentSnapshot | null = null;
+  const ordered = baseQuery.orderBy('__name__');
+
+  for (;;) {
+    let q = ordered.limit(batchLimit);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const snap = await q.get();
+    if (snap.empty) break;
+
+    const batch = adminDb.batch();
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    total += snap.size;
+
+    if (snap.size < batchLimit) break;
+    lastDoc = snap.docs[snap.docs.length - 1];
+  }
+  return total;
 };
 
 const deleteBoardData = async (workspaceId: string) => {
@@ -227,46 +250,81 @@ const cloneFileDocumentToWorkspace = async (params: {
   };
 };
 
+const STORAGE_CLONE_CONCURRENCY = 16;
+
+const runWithConcurrency = async <T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> => {
+  const results: T[] = new Array(tasks.length);
+  let cursor = 0;
+  const workers: Promise<void>[] = [];
+  const limit = Math.max(1, Math.min(concurrency, tasks.length));
+  for (let i = 0; i < limit; i += 1) {
+    workers.push((async () => {
+      for (;;) {
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= tasks.length) return;
+        const task = tasks[idx];
+        if (!task) return;
+        results[idx] = await task();
+      }
+    })());
+  }
+  await Promise.all(workers);
+  return results;
+};
+
+const loadWorkspaceDocsPaginated = async (workspaceId: string, batchSize = 200): Promise<StoredWorkspaceDocument[]> => {
+  const out: StoredWorkspaceDocument[] = [];
+  let lastDoc: QueryDocumentSnapshot | null = null;
+  for (;;) {
+    let q: Query = adminDb.collection('documents')
+      .where('workspaceId', '==', workspaceId)
+      .orderBy('__name__')
+      .limit(batchSize);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const snap = await q.get();
+    if (snap.empty) break;
+    snap.docs.forEach(d => out.push({ id: d.id, ...(d.data() as StoredDocumentRecord) } as StoredWorkspaceDocument));
+    if (snap.size < batchSize) break;
+    lastDoc = snap.docs[snap.docs.length - 1];
+  }
+  return out;
+};
+
 const cloneWorkspaceDocuments = async (params: {
   sourceWorkspaceId: string;
   targetWorkspaceId: string;
   ownerId: string;
   mergeIntoExisting: boolean;
 }) => {
-  const sourceSnapshot = await adminDb
-    .collection('documents')
-    .where('workspaceId', '==', params.sourceWorkspaceId)
-    .get();
+  const [sourceDocs, targetDocsLoaded] = await Promise.all([
+    loadWorkspaceDocsPaginated(params.sourceWorkspaceId),
+    loadWorkspaceDocsPaginated(params.targetWorkspaceId)
+  ]);
 
-  const targetSnapshot = await adminDb
-    .collection('documents')
-    .where('workspaceId', '==', params.targetWorkspaceId)
-    .get();
-
-  const targetDocs = targetSnapshot.docs.map(doc => ({
-    id: doc.id,
-    ...(doc.data() as StoredDocumentRecord)
-  })) as StoredWorkspaceDocument[];
+  const targetDocs = targetDocsLoaded.slice();
   let created = 0;
   let skippedFolders = 0;
   let clonedFiles = 0;
 
-  const sourceDocs = sourceSnapshot.docs.map(doc => ({
-    id: doc.id,
-    ...(doc.data() as StoredDocumentRecord)
-  })) as StoredWorkspaceDocument[];
+  sourceDocs.sort((a, b) => {
+    const isFolderA = a.type === DocumentType.Folder;
+    const isFolderB = b.type === DocumentType.Folder;
+    if (isFolderA !== isFolderB) return isFolderA ? -1 : 1;
+    const folderA = normalizeFolderPath(typeof a.folder === 'string' ? a.folder : undefined);
+    const folderB = normalizeFolderPath(typeof b.folder === 'string' ? b.folder : undefined);
+    if (folderA !== folderB) return folderA.localeCompare(folderB);
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
 
-  sourceDocs
-    .sort((a, b) => {
-      const isFolderA = a.type === DocumentType.Folder;
-      const isFolderB = b.type === DocumentType.Folder;
-      if (isFolderA !== isFolderB) return isFolderA ? -1 : 1;
-      const folderA = normalizeFolderPath(typeof a.folder === 'string' ? a.folder : undefined);
-      const folderB = normalizeFolderPath(typeof b.folder === 'string' ? b.folder : undefined);
-      if (folderA !== folderB) return folderA.localeCompare(folderB);
-      return String(a.name || '').localeCompare(String(b.name || ''));
-    });
+  type Plan = {
+    sourceDoc: StoredWorkspaceDocument;
+    targetName: string;
+    folder: string;
+    sourceType: string;
+  };
 
+  const plans: Plan[] = [];
   for (const sourceDoc of sourceDocs) {
     const sourceType = typeof sourceDoc.type === 'string' ? sourceDoc.type : DocumentType.Text;
     const folder = normalizeFolderPath(typeof sourceDoc.folder === 'string' ? sourceDoc.folder : undefined);
@@ -290,6 +348,47 @@ const cloneWorkspaceDocuments = async (params: {
       targetName = resolveMergedDocName({ doc: sourceDoc, targetDocs });
     }
 
+    plans.push({ sourceDoc, targetName, folder, sourceType });
+  }
+
+  const cloneStorageTasks = plans.map((plan) => async () => {
+    if (plan.sourceType === DocumentType.File) {
+      const fileClone = await cloneFileDocumentToWorkspace({
+        doc: plan.sourceDoc,
+        targetWorkspaceId: params.targetWorkspaceId,
+        ownerId: params.ownerId,
+        targetName: plan.targetName
+      });
+      return { type: 'file' as const, fileClone };
+    }
+    if (plan.sourceType !== DocumentType.Folder) {
+      const textClone = await cloneTextDocumentToWorkspace({
+        doc: plan.sourceDoc,
+        targetWorkspaceId: params.targetWorkspaceId,
+        ownerId: params.ownerId,
+        targetName: plan.targetName
+      });
+      return { type: 'text' as const, textClone };
+    }
+    return { type: 'folder' as const };
+  });
+
+  const storageResults = await runWithConcurrency(cloneStorageTasks, STORAGE_CLONE_CONCURRENCY);
+
+  const bulkWriter = adminDb.bulkWriter();
+  bulkWriter.onWriteError((error) => {
+    if (error.failedAttempts < 5) return true;
+    console.warn('[cloneWorkspaceDocuments] write error after retries:', getErrorMessage(error));
+    return false;
+  });
+
+  const collection = adminDb.collection('documents');
+  for (let i = 0; i < plans.length; i += 1) {
+    const plan = plans[i];
+    const storage = storageResults[i];
+    if (!plan || !storage) continue;
+    const { sourceDoc, targetName, folder, sourceType } = plan;
+
     const cloneData: StoredDocumentRecord = {
       name: targetName,
       type: sourceType,
@@ -300,43 +399,31 @@ const cloneWorkspaceDocuments = async (params: {
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp()
     };
-    if (typeof sourceDoc.order === 'number') {
-      cloneData.order = sourceDoc.order;
-    }
-
+    if (typeof sourceDoc.order === 'number') cloneData.order = sourceDoc.order;
     if (typeof sourceDoc.sourceName === 'string') cloneData.sourceName = sourceDoc.sourceName;
     if (typeof sourceDoc.sourceMimeType === 'string') cloneData.sourceMimeType = sourceDoc.sourceMimeType;
     if (typeof sourceDoc.sourceStoragePath === 'string') cloneData.sourceStoragePath = sourceDoc.sourceStoragePath;
     if (typeof sourceDoc.sourceUrl === 'string') cloneData.sourceUrl = sourceDoc.sourceUrl;
     if (typeof sourceDoc.sourceFormat === 'string') cloneData.sourceFormat = sourceDoc.sourceFormat;
 
-    if (sourceType === DocumentType.File) {
-      const fileClone = await cloneFileDocumentToWorkspace({
-        doc: sourceDoc,
-        targetWorkspaceId: params.targetWorkspaceId,
-        ownerId: params.ownerId,
-        targetName
-      });
-      if (fileClone.storagePath) cloneData.storagePath = fileClone.storagePath;
-      if (fileClone.url) cloneData.url = fileClone.url;
-      if (typeof fileClone.size === 'number') cloneData.size = fileClone.size;
+    if (storage.type === 'file' && storage.fileClone) {
+      if (storage.fileClone.storagePath) cloneData.storagePath = storage.fileClone.storagePath;
+      if (storage.fileClone.url) cloneData.url = storage.fileClone.url;
+      if (typeof storage.fileClone.size === 'number') cloneData.size = storage.fileClone.size;
       clonedFiles += 1;
-    } else if (sourceType !== DocumentType.Folder) {
+    } else if (storage.type === 'text') {
       cloneData.content = typeof sourceDoc.content === 'string' ? sourceDoc.content : '';
-      const textClone = await cloneTextDocumentToWorkspace({
-        doc: sourceDoc,
-        targetWorkspaceId: params.targetWorkspaceId,
-        ownerId: params.ownerId,
-        targetName
-      });
-      if (textClone?.storagePath) cloneData.storagePath = textClone.storagePath;
-      if (textClone?.url) cloneData.url = textClone.url;
+      if (storage.textClone?.storagePath) cloneData.storagePath = storage.textClone.storagePath;
+      if (storage.textClone?.url) cloneData.url = storage.textClone.url;
     }
 
-    const createdRef = await adminDb.collection('documents').add(cloneData);
-    targetDocs.push({ id: createdRef.id, ...cloneData });
+    const newRef = collection.doc();
+    bulkWriter.set(newRef, cloneData).catch(() => undefined);
+    targetDocs.push({ id: newRef.id, ...cloneData });
     created += 1;
   }
+
+  await bulkWriter.close();
 
   return { created, skippedFolders, clonedFiles };
 };
@@ -362,26 +449,35 @@ const cloneBoardDataToWorkspace = async (params: {
       deleteCollectionInBatches(targetBoardRef.collection('cards'))
     ]);
 
+    const bulkWriter = adminDb.bulkWriter();
+    bulkWriter.onWriteError((error) => {
+      if (error.failedAttempts < 5) return true;
+      console.warn('[cloneBoardDataToWorkspace] write error after retries:', getErrorMessage(error));
+      return false;
+    });
+
     const columnIdMap = new Map<string, string>();
     for (const sourceColumn of sourceColumnsSnap.docs) {
       const targetColumnRef = targetBoardRef.collection('columns').doc();
       columnIdMap.set(sourceColumn.id, targetColumnRef.id);
-      await targetColumnRef.set({
+      bulkWriter.set(targetColumnRef, {
         ...sourceColumn.data(),
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
-      });
+      }).catch(() => undefined);
     }
 
     for (const sourceCard of sourceCardsSnap.docs) {
       const data = sourceCard.data();
-      await targetBoardRef.collection('cards').doc().set({
+      bulkWriter.set(targetBoardRef.collection('cards').doc(), {
         ...data,
         columnId: columnIdMap.get(String(data.columnId || '')) || data.columnId,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
-      });
+      }).catch(() => undefined);
     }
+
+    await bulkWriter.close();
 
     return {
       columnsCreated: sourceColumnsSnap.size,
@@ -407,6 +503,13 @@ const cloneBoardDataToWorkspace = async (params: {
   const columnIdMap = new Map<string, string>();
   let columnsCreated = 0;
 
+  const bulkWriter = adminDb.bulkWriter();
+  bulkWriter.onWriteError((error) => {
+    if (error.failedAttempts < 5) return true;
+    console.warn('[cloneBoardDataToWorkspace] write error after retries:', getErrorMessage(error));
+    return false;
+  });
+
   for (const sourceColumn of sourceColumnsSnap.docs) {
     const data = sourceColumn.data();
     const normalizedName = typeof data.name === 'string' ? data.name.trim().toLowerCase() : '';
@@ -418,12 +521,12 @@ const cloneBoardDataToWorkspace = async (params: {
 
     maxColumnOrder += 1000;
     const targetColumnRef = targetBoardRef.collection('columns').doc();
-    await targetColumnRef.set({
+    bulkWriter.set(targetColumnRef, {
       name: typeof data.name === 'string' && data.name.trim() ? data.name.trim() : 'Sin titulo',
       order: maxColumnOrder,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp()
-    });
+    }).catch(() => undefined);
     columnIdMap.set(sourceColumn.id, targetColumnRef.id);
     columnsCreated += 1;
   }
@@ -444,15 +547,17 @@ const cloneBoardDataToWorkspace = async (params: {
     const targetColumnId = columnIdMap.get(sourceColumnId) || sourceColumnId;
     const nextOrder = (maxOrderByColumn.get(targetColumnId) ?? 0) + 1000;
     maxOrderByColumn.set(targetColumnId, nextOrder);
-    await targetBoardRef.collection('cards').doc().set({
+    bulkWriter.set(targetBoardRef.collection('cards').doc(), {
       ...data,
       columnId: targetColumnId,
       order: nextOrder,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp()
-    });
+    }).catch(() => undefined);
     cardsCreated += 1;
   }
+
+  await bulkWriter.close();
 
   return { columnsCreated, cardsCreated };
 };
@@ -761,26 +866,16 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: 'Only workspace owner or admin can delete' }, { status: 403 });
     }
 
-    // Delete documents, board data, and storage files in parallel
-    const [deletedDocs, boardResult, storageResult] = await Promise.allSettled([
-      (async () => {
-        const batchLimit = 400;
-        let count = 0;
-        let lastDoc: QueryDocumentSnapshot | null = null;
-        for (;;) {
-          let q = adminDb.collection('documents').where('workspaceId', '==', id).orderBy('__name__').limit(batchLimit);
-          if (lastDoc) q = q.startAfter(lastDoc);
-          const snap = await q.get();
-          if (snap.empty) break;
-          const batch = adminDb.batch();
-          snap.docs.forEach(d => batch.delete(d.ref));
-          await batch.commit();
-          count += snap.size;
-          if (snap.size < batchLimit) break;
-          lastDoc = snap.docs[snap.docs.length - 1];
-        }
-        return count;
-      })(),
+    const [
+      deletedDocs,
+      boardResult,
+      storageResult,
+      semanticDeleted,
+      auditLogDeleted,
+      outboxDeleted,
+      snippetsDeleted
+    ] = await Promise.allSettled([
+      deleteQueryInBatches(adminDb.collection('documents').where('workspaceId', '==', id)),
       deleteBoardData(id).catch(error => { console.warn('Board cleanup failed for workspace', id, getErrorMessage(error)); return false; }),
       (async () => {
         const s3 = getNasClient();
@@ -805,20 +900,38 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
           token = out.IsTruncated ? out.NextContinuationToken : undefined;
         } while (token);
         return true;
-      })().catch(error => { console.warn('Storage cleanup failed for workspace', id, getErrorMessage(error)); return false; })
+      })().catch(error => { console.warn('Storage cleanup failed for workspace', id, getErrorMessage(error)); return false; }),
+      adminDb.collection('workspaceSemanticStates').doc(id).delete()
+        .then(() => true)
+        .catch(error => { console.warn('Semantic state cleanup failed for workspace', id, getErrorMessage(error)); return false; }),
+      deleteQueryInBatches(adminDb.collection('agentAuditLog').where('workspaceId', '==', id))
+        .catch(error => { console.warn('Audit log cleanup failed for workspace', id, getErrorMessage(error)); return 0; }),
+      deleteQueryInBatches(adminDb.collection('syncEventsOutbox').where('workspaceId', '==', id))
+        .catch(error => { console.warn('Outbox cleanup failed for workspace', id, getErrorMessage(error)); return 0; }),
+      deleteQueryInBatches(adminDb.collection('snippets').where('workspaceId', '==', id))
+        .catch(error => { console.warn('Snippets cleanup failed for workspace', id, getErrorMessage(error)); return 0; })
     ]);
 
     const deletedDocsCount = deletedDocs.status === 'fulfilled' ? deletedDocs.value : 0;
     const boardDeleted = boardResult.status === 'fulfilled' ? boardResult.value : false;
     const storageDeleted = storageResult.status === 'fulfilled' ? storageResult.value : false;
+    const semanticStateDeleted = semanticDeleted.status === 'fulfilled' ? semanticDeleted.value : false;
+    const auditLogsDeleted = auditLogDeleted.status === 'fulfilled' ? auditLogDeleted.value : 0;
+    const outboxEventsDeleted = outboxDeleted.status === 'fulfilled' ? outboxDeleted.value : 0;
+    const snippetsRemoved = snippetsDeleted.status === 'fulfilled' ? snippetsDeleted.value : 0;
 
     await wsRef.delete();
+    invalidateAgoraWorkspaceContext(id);
 
     return NextResponse.json({
       status: 'deleted',
       documentsDeleted: deletedDocsCount,
       storageDeleted,
-      boardDeleted
+      boardDeleted,
+      semanticStateDeleted,
+      auditLogsDeleted,
+      outboxEventsDeleted,
+      snippetsDeleted: snippetsRemoved
     });
   } catch (error: unknown) {
     console.error('Error deleting workspace:', getErrorMessage(error));

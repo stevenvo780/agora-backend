@@ -32,6 +32,8 @@ export async function GET(req: NextRequest) {
         const { searchParams } = new URL(req.url);
         const wsParam = searchParams.get('workspaceId') ?? ctx.workspaceId;
         const since = Number.parseInt(searchParams.get('since') ?? '0', 10) || 0;
+        const presignParam = (searchParams.get('presign') ?? 'true').toLowerCase();
+        const includePresign = presignParam !== 'false' && presignParam !== '0';
 
         // Si el header WORKER_TOKEN difiere del query workspaceId, rechazar
         // (un worker sólo puede ver su propio workspace).
@@ -82,10 +84,12 @@ export async function GET(req: NextRequest) {
 
                     const repoPath = buildRepoPath(doc.folder, doc.name);
                     let signedUrl: string | null = null;
-                    try {
-                        signedUrl = await presignGet(doc.storagePath, SIGNED_TTL);
-                    } catch (e) {
-                        console.warn('[sync/worker-list] presignGet failed for', doc.storagePath, getErrorMessage(e));
+                    if (includePresign) {
+                        try {
+                            signedUrl = await presignGet(doc.storagePath, SIGNED_TTL);
+                        } catch (e) {
+                            console.warn('[sync/worker-list] presignGet failed for', doc.storagePath, getErrorMessage(e));
+                        }
                     }
 
                     return {

@@ -11,6 +11,8 @@ import { buildStoragePath, ensureTextFileName } from '@/lib/storage-path';
 import { isWorkspaceMember } from '@/lib/server-auth';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
+import { writeDocumentBlob } from '@/lib/documents/writeDocumentBlob';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import {
   EMPTY_SEMANTIC_WORKSPACE_STATE,
   normalizeSemanticWorkspaceState,
@@ -350,19 +352,52 @@ export function summarizeDocumentMeta(doc: StoredDocument) {
 
 // ── Storage sync ─────────────────────────────────────────────────
 
-export async function syncTextDocumentToStorage(doc: StoredDocument, content: string) {
+export interface SyncTextDocumentToStorageOptions {
+  docRef?: FirebaseFirestore.DocumentReference;
+  source?: 'agent-create' | 'agent-update' | 'agent-restore';
+  writerId?: string;
+  baseVersion?: number;
+  extraUpdate?: Record<string, unknown>;
+}
+
+export async function syncTextDocumentToStorage(
+  doc: StoredDocument,
+  content: string,
+  options: SyncTextDocumentToStorageOptions = {}
+): Promise<string | null> {
   try {
     const fileName = ensureTextFileName(doc.name || 'Sin titulo');
+    const workspaceId = doc.workspaceId || PERSONAL_WORKSPACE_ID;
+    const ownerId = doc.ownerId || 'unknown';
     const storagePath = doc.storagePath || buildStoragePath({
-      workspaceId: doc.workspaceId || PERSONAL_WORKSPACE_ID,
-      ownerId: doc.ownerId || 'unknown',
+      workspaceId,
+      ownerId,
       folder: doc.folder,
       fileName
     });
+
+    const docRef = options.docRef ?? (doc.id ? adminDb.collection('documents').doc(doc.id) : null);
+    if (docRef) {
+      await writeDocumentBlob({
+        docRef,
+        content,
+        workspaceId,
+        ownerId,
+        storagePath,
+        contentType: doc.mimeType || 'text/markdown',
+        source: options.source ?? 'agent-update',
+        writerId: options.writerId ?? ownerId,
+        baseVersion: options.baseVersion,
+        extraUpdate: options.extraUpdate
+      });
+      return storagePath;
+    }
+
     await putObject(storagePath, content, {
       contentType: doc.mimeType || 'text/markdown',
-      metadata: { 'agora-source': 'agent', 'agora-owner': doc.ownerId || 'unknown' }
+      metadata: { 'agora-source': options.source ?? 'agent-update', 'agora-owner': ownerId }
     });
+    invalidateAgoraWorkspaceContext(workspaceId);
     return storagePath;
   } catch (error) {
     console.warn('Agora agent storage sync failed:', getErrorMessage(error));

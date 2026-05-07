@@ -5,6 +5,22 @@ import {
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
+const FAILED_PRECONDITION = 9 as const;
+
+const isFirestoreIndexError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === FAILED_PRECONDITION || code === 'failed-precondition') return true;
+  const msg = (error as { message?: unknown }).message;
+  return typeof msg === 'string' && /requires an index/i.test(msg);
+};
+
+const errMessage = (e: unknown): string => {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  return String(e);
+};
+
 async function listRecentActions(call: AgentToolCall, ctx: AgentExecutionContext) {
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 100);
   const sinceMs = typeof call.args.sinceMs === 'number' ? call.args.sinceMs : 0;
@@ -12,7 +28,18 @@ async function listRecentActions(call: AgentToolCall, ctx: AgentExecutionContext
     .where('uid', '==', ctx.uid)
     .where('workspaceId', '==', ctx.workspaceId);
   if (sinceMs > 0) query = query.where('createdAt', '>=', new Date(sinceMs));
-  const snap = await query.orderBy('createdAt', 'desc').limit(limit).get().catch(() => null);
+  const snap = await query.orderBy('createdAt', 'desc').limit(limit).get().catch((err: unknown) => {
+    if (isFirestoreIndexError(err)) {
+      console.error(
+        '[observability/list_recent_actions] missing composite index, returning degraded result. ' +
+        'Required index: agentAuditLog (uid ASC, workspaceId ASC, createdAt DESC). ' +
+        'Original error: ' + errMessage(err)
+      );
+    } else {
+      console.error('[observability/list_recent_actions] query failed:', errMessage(err));
+    }
+    return null;
+  });
   if (!snap) {
     return ok(call, 'Audit log no disponible (colección agentAuditLog inexistente o sin índice).', { actions: [] });
   }
@@ -37,7 +64,20 @@ async function getAgentAuditLog(call: AgentToolCall, ctx: AgentExecutionContext)
     .where('uid', '==', ctx.uid)
     .where('workspaceId', '==', ctx.workspaceId);
   if (tool) query = query.where('tool', '==', tool);
-  const snap = await query.orderBy('createdAt', 'desc').limit(limit).get().catch(() => null);
+  const snap = await query.orderBy('createdAt', 'desc').limit(limit).get().catch((err: unknown) => {
+    if (isFirestoreIndexError(err)) {
+      console.error(
+        '[observability/get_agent_audit_log] missing composite index, returning degraded result. ' +
+        (tool
+          ? 'Required index: agentAuditLog (uid ASC, workspaceId ASC, tool ASC, createdAt DESC). '
+          : 'Required index: agentAuditLog (uid ASC, workspaceId ASC, createdAt DESC). ') +
+        'Original error: ' + errMessage(err)
+      );
+    } else {
+      console.error('[observability/get_agent_audit_log] query failed:', errMessage(err));
+    }
+    return null;
+  });
   if (!snap) {
     return ok(call, 'Audit log persistido no disponible aún. El agente registra cada tool call vía writeAuditLog en memoria + Firestore best-effort.', { entries: [] });
   }
@@ -109,7 +149,18 @@ async function inspectSyncOutbox(call: AgentToolCall, ctx: AgentExecutionContext
     .orderBy('createdAt', 'desc')
     .limit(limit)
     .get()
-    .catch(() => null);
+    .catch((err: unknown) => {
+      if (isFirestoreIndexError(err)) {
+        console.error(
+          '[observability/inspect_sync_outbox] missing composite index, returning degraded result. ' +
+          'Required index: syncEventsOutbox (workspaceId ASC, createdAt DESC). ' +
+          'Original error: ' + errMessage(err)
+        );
+      } else {
+        console.error('[observability/inspect_sync_outbox] query failed:', errMessage(err));
+      }
+      return null;
+    });
   if (!snap) {
     return ok(call, 'No se pudo leer syncEventsOutbox (puede no haber índice o estar vacía).', { entries: [] });
   }

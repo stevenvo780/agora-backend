@@ -15,11 +15,12 @@ import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { mockGetDoc, mockUpdateDoc, mockDeleteDoc } from '@/lib/insecure-mock-store';
 import { invalidateStorageUsageCache } from '@/lib/storage-usage';
-import { isNasConfigured, putObject, moveObject, deleteObject, presignGet, getObjectBuffer } from '@/lib/nas-storage';
+import { isNasConfigured, moveObject, deleteObject, presignGet, getObjectBuffer } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
 import { parseDocumentUpdatePayload } from '@agora/contracts';
 import { isDotfileName } from '@agora/contracts';
-import { computeSearchableContent } from '@/lib/search/searchable-content';
+import { writeDocumentBlob } from '@/lib/documents/writeDocumentBlob';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -108,13 +109,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             storagePath = targetStoragePath;
         }
 
-        let contentHash: string | null = null;
-        let size: number | null = null;
-        if (body.content !== undefined && !isFileDoc && storagePath) {
-            // SALVAGUARDA: nunca sobrescribir un blob no-vacío con contenido vacío
-            // a menos que el cliente lo pida explícitamente (allowEmptyOverwrite=true)
-            // Y sea el owner del documento. Esto previene perder docs por bug del
-            // editor o request maliciosa de un colaborador.
+        const writingTextContent = body.content !== undefined && !isFileDoc && Boolean(storagePath);
+        if (writingTextContent && storagePath) {
             const newContent: string = body.content ?? '';
             const allowEmpty = body.allowEmptyOverwrite === true && existingOwnerId === auth.uid;
             if (newContent.length === 0 && !allowEmpty) {
@@ -127,44 +123,50 @@ export async function PUT(req: NextRequest, context: RouteContext) {
                     }, { status: 409 });
                 }
             }
+
             const ext = (storagePath.match(/\.[^./]+$/)?.[0] ?? '').toLowerCase();
             const isMd = ext === '.md' || ext === '.markdown';
-            const ct = isMd ? 'text/markdown'
+            const contentType = isMd ? 'text/markdown'
                 : (typeof existingData?.mimeType === 'string' ? existingData.mimeType : 'text/plain');
-            const out = await putObject(storagePath, newContent, {
-                contentType: ct,
-                metadata: { 'agora-source': 'api-update', 'agora-writer': auth.uid }
+
+            const extraUpdate: Record<string, unknown> = {};
+            if (typeof body.name === 'string') extraUpdate.name = body.name;
+            if (typeof body.type === 'string') extraUpdate.type = body.type;
+            if (typeof body.mimeType === 'string' || body.mimeType === null) extraUpdate.mimeType = body.mimeType ?? null;
+            if (typeof body.folder === 'string') extraUpdate.folder = normalizeFolderPath(body.folder);
+            if (typeof body.order === 'number') extraUpdate.order = body.order;
+
+            const baseVersion = typeof existingData?.version === 'number' ? existingData.version : 0;
+            const result = await writeDocumentBlob({
+                docRef,
+                content: newContent,
+                workspaceId: existingWorkspaceId,
+                ownerId: existingOwnerId,
+                storagePath,
+                contentType,
+                source: 'api-update',
+                writerId: auth.uid,
+                baseVersion,
+                extraUpdate,
+                emitPingPayload: { userId: existingOwnerId }
             });
-            contentHash = out.contentHash;
-            size = out.size;
+
+            return NextResponse.json({
+                status: 'success',
+                version: result.version,
+                contentHash: result.contentHash
+            });
         }
 
         const updateData: Record<string, unknown> = {
             updatedAt: FieldValue.serverTimestamp()
         };
 
-        if (body.content !== undefined && !isFileDoc) {
-            updateData.content = FieldValue.delete();
-            updateData.storageBackend = 'minio';
-            if (contentHash) updateData.contentHash = contentHash;
-            if (size !== null) updateData.size = size;
-            const baseVersion = typeof existingData?.version === 'number' ? existingData.version : 0;
-            updateData.baseVersion = baseVersion;
-            updateData.version = baseVersion + 1;
-            updateData.syncState = 'synced';
-            updateData.lastWriter = auth.uid;
-
-            // searchableContent denormalizado: re-compute en cada autosave.
-            // Si el content viene vacío, borrar el campo para no dejar stale.
-            const newContent = body.content ?? '';
-            const searchable = computeSearchableContent(newContent);
-            updateData.searchableContent = searchable.length > 0 ? searchable : FieldValue.delete();
-        }
         if (typeof body.name === 'string') updateData.name = body.name;
         if (typeof body.type === 'string') updateData.type = body.type;
         if (typeof body.mimeType === 'string' || body.mimeType === null) updateData.mimeType = body.mimeType ?? null;
         if (typeof body.folder === 'string') updateData.folder = normalizeFolderPath(body.folder);
-        if (typeof body.size === 'number' && size === null) updateData.size = body.size;
+        if (typeof body.size === 'number') updateData.size = body.size;
         if (typeof body.order === 'number') updateData.order = body.order;
         if (storagePath && storagePath !== existingStoragePath) {
             updateData.storagePath = storagePath;
@@ -190,6 +192,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
         }
 
         await docRef.update(updateData);
+        invalidateAgoraWorkspaceContext(existingWorkspaceId);
 
         await emitPing({
             scope: 'document',
@@ -197,16 +200,12 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             userId: existingOwnerId,
             docId: id,
             path: storagePath ?? null,
-            version: typeof updateData.version === 'number' ? updateData.version : null,
-            contentHash,
+            version: null,
+            contentHash: null,
             sender: auth.uid
         }).catch(() => undefined);
 
-        return NextResponse.json({
-            status: 'success',
-            ...(typeof updateData.version === 'number' ? { version: updateData.version } : {}),
-            ...(contentHash ? { contentHash } : {})
-        });
+        return NextResponse.json({ status: 'success' });
     } catch (error: unknown) {
         console.error('[documents/[id] PUT] error', error);
         return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -320,6 +319,8 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
         await docRef.delete();
         invalidateStorageUsageCache(auth.uid);
+        const wsId = typeof data?.workspaceId === 'string' ? data.workspaceId : null;
+        if (wsId) invalidateAgoraWorkspaceContext(wsId);
 
         await emitPing({
             scope: 'document',

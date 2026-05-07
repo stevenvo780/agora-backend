@@ -20,12 +20,14 @@ export const dynamic = 'force-dynamic';
 import { verifyWorkerAuth } from '@/lib/worker-auth';
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
-import { objectExists, deleteObject, isNasConfigured } from '@/lib/nas-storage';
+import { objectExists, deleteObject, isNasConfigured, getObjectBuffer } from '@/lib/nas-storage';
 import { enforceStorageQuota } from '@/lib/plan-guard';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 import { emitPing } from '@/lib/nas-events';
 import { getErrorMessage } from '@/lib/error-utils';
 import { parseWorkerCommitPayload, splitRepoPath } from '@agora/contracts';
+import { computeSearchableContent } from '@/lib/search/searchable-content';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
 const TEXT_EXT = new Set([
     '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.toml', '.ini',
@@ -76,6 +78,24 @@ export async function POST(req: NextRequest) {
         const { folder, name } = splitRepoPath(repoPath);
         const { type: inferredType, mimeType: inferredMime } = inferType(name, mimeType ?? undefined);
 
+        const MAX_SEARCHABLE_FETCH_BYTES = 256 * 1024;
+        const lowerName = name.toLowerCase();
+        const isMarkdownLike = inferredType === 'text'
+            && (inferredMime === 'text/markdown' || lowerName.endsWith('.md') || lowerName.endsWith('.markdown'));
+        let searchable: string | null = null;
+        if (isMarkdownLike && (size === null || size === undefined || size <= MAX_SEARCHABLE_FETCH_BYTES)) {
+            try {
+                const buf = await getObjectBuffer(storagePath);
+                if (buf) {
+                    const text = buf.subarray(0, MAX_SEARCHABLE_FETCH_BYTES).toString('utf8');
+                    const computed = computeSearchableContent(text);
+                    if (computed.length > 0) searchable = computed;
+                }
+            } catch (err) {
+                console.warn('[sync/worker-commit] searchable compute failed:', getErrorMessage(err));
+            }
+        }
+
         // Buscar doc existente. Personal: por (ownerId, name, folder); Shared: por (workspaceId, name, folder).
         const existingQuery = isPersonal
             ? adminDb.collection('documents')
@@ -119,7 +139,7 @@ export async function POST(req: NextRequest) {
             const cur = existingSnap.docs[0].data() as { version?: number };
             const currentVersion = typeof cur.version === 'number' ? cur.version : 0;
             version = currentVersion + 1;
-            await ref.update({
+            const updatePayload: Record<string, unknown> = {
                 contentHash,
                 size: size ?? FieldValue.delete(),
                 version,
@@ -129,11 +149,16 @@ export async function POST(req: NextRequest) {
                 storagePath,
                 storageBackend: 'minio',
                 mimeType: inferredMime,
+                content: FieldValue.delete(),
                 updatedAt: FieldValue.serverTimestamp()
-            });
+            };
+            if (isMarkdownLike) {
+                updatePayload.searchableContent = searchable !== null ? searchable : FieldValue.delete();
+            }
+            await ref.update(updatePayload);
             docId = ref.id;
         } else {
-            const ref = await adminDb.collection('documents').add({
+            const docPayload: Record<string, unknown> = {
                 name,
                 folder,
                 type: inferredType,
@@ -150,10 +175,14 @@ export async function POST(req: NextRequest) {
                 lastWriter: `worker:${ctx.workspaceId}`,
                 createdAt: FieldValue.serverTimestamp(),
                 updatedAt: FieldValue.serverTimestamp()
-            });
+            };
+            if (searchable !== null) docPayload.searchableContent = searchable;
+            const ref = await adminDb.collection('documents').add(docPayload);
             docId = ref.id;
             created = true;
         }
+
+        invalidateAgoraWorkspaceContext(ctx.workspaceId);
 
         await emitPing({
             scope: 'document',

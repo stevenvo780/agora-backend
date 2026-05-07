@@ -12,8 +12,10 @@ import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, sanitizeFileName } from '@/lib/storage-path';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
-import { putObject, presignGet, isNasConfigured } from '@/lib/nas-storage';
+import { putObject, presignGet, isNasConfigured, deleteObject } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
+import { computeSearchableContent } from '@/lib/search/searchable-content';
+import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
 export const runtime = 'nodejs';
 
@@ -70,9 +72,16 @@ export async function POST(req: NextRequest) {
         });
         const url = await presignGet(storagePath, 60 * 60);
 
-        const docRef = await adminDb.collection('documents').add({
+        const lowerMime = (file.type || '').toLowerCase();
+        const lowerName = file.name.toLowerCase();
+        const isMarkdownUpload = lowerMime === 'text/markdown'
+            || lowerMime === 'text/x-markdown'
+            || lowerName.endsWith('.md')
+            || lowerName.endsWith('.markdown');
+
+        const docData: Record<string, unknown> = {
             name: file.name,
-            type: DocumentType.File,
+            type: isMarkdownUpload ? DocumentType.Text : DocumentType.File,
             url,
             mimeType: file.type,
             storagePath,
@@ -88,7 +97,27 @@ export async function POST(req: NextRequest) {
             folder,
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp()
-        });
+        };
+
+        if (isMarkdownUpload) {
+            try {
+                const text = buf.toString('utf8');
+                const searchable = computeSearchableContent(text);
+                if (searchable.length > 0) docData.searchableContent = searchable;
+            } catch (err) {
+                console.warn('[upload] computeSearchableContent failed:', getErrorMessage(err));
+            }
+        }
+
+        let docRef: FirebaseFirestore.DocumentReference;
+        try {
+            docRef = await adminDb.collection('documents').add(docData);
+        } catch (err) {
+            await deleteObject(storagePath).catch(() => undefined);
+            throw err;
+        }
+
+        invalidateAgoraWorkspaceContext(workspaceId);
 
         await emitPing({
             scope: 'document',
@@ -105,7 +134,7 @@ export async function POST(req: NextRequest) {
             id: docRef.id,
             url,
             name: file.name,
-            type: DocumentType.File,
+            type: isMarkdownUpload ? DocumentType.Text : DocumentType.File,
             path: storagePath,
             storagePath,
             storageBackend: 'minio',
