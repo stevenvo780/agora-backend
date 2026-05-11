@@ -5,7 +5,8 @@
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 
 export const MAX_CONTENT_PREVIEW = 800;
-export const DEFAULT_DOC_LIMIT = 25;
+export const DEFAULT_DOC_LIMIT = 100;
+export const MAX_DOC_LIMIT = 500;
 
 /**
  * Tamaño de página por defecto al iterar documentos del workspace.

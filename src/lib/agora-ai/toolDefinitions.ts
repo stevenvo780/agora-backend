@@ -6,26 +6,26 @@ import { AGENT_UI_PANEL_DESCRIPTION, AGENT_UI_PANELS } from '@/lib/agora-ai/uiPa
 export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: 'list_documents',
-    description: 'Lista documentos del workspace actual. Devuelve una página; si la respuesta incluye page.hasMore=true, hay más documentos: llama de nuevo pasando page.nextCursor para continuar.',
+    description: 'Lista documentos del workspace actual. Default devuelve hasta 100 documentos por llamada (subible hasta 500 via limit). Si la respuesta incluye page.hasMore=true / page.nextCursor, hay más documentos: llama de nuevo pasando cursor=<nextCursor> para continuar. La respuesta incluye total con el conteo aproximado de la página.',
     parameters: {
       type: 'object',
       properties: {
         folder: { type: 'string', description: 'Carpeta concreta a inspeccionar. Opcional.' },
         type: { type: 'string', enum: Object.values(DocumentType), description: 'Filtra por tipo de documento. Opcional.' },
-        limit: { type: 'number', description: 'Máximo de items devueltos al modelo (post-filtro), entre 1 y 100.' },
+        limit: { type: 'number', description: 'Máximo de items devueltos al modelo (post-filtro), entre 1 y 500. Default 100.' },
         pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000. Solo subir si necesitas escanear más por página.' },
-        cursor: { type: 'string', description: 'Cursor opaco devuelto en page.nextCursor de una llamada previa para paginar.' }
+        cursor: { type: 'string', description: 'Cursor opaco devuelto en page.nextCursor de una llamada previa para paginar. Pásalo para obtener la siguiente página.' }
       },
       additionalProperties: false
     }
   },
   {
     name: 'read_document',
-    description: 'Lee y devuelve el contenido completo de un documento específico.',
+    description: 'Lee y devuelve el contenido completo de un documento específico. Si pasas un nombre y hay varios documentos con ese nombre, devuelve { ambiguous: true, candidates: [...] } SIN error — elige el id correcto y vuelve a llamar.',
     parameters: {
       type: 'object',
       properties: {
-        documentId: { type: 'string', description: 'Nombre o ID del documento a leer.' }
+        documentId: { type: 'string', description: 'Nombre o ID del documento a leer. Recomendado: ID Firestore exacto (20 chars).' }
       },
       required: ['documentId'],
       additionalProperties: false

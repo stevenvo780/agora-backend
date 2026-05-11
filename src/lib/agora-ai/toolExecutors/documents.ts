@@ -2,7 +2,8 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, fail, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
-  ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadDocumentFullContent,
+  ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, fetchDocumentForRead,
+  loadDocumentFullContent,
   loadWorkspaceDocumentsPage,
   buildPageMeta,
   encodeDocumentPageCursor,
@@ -13,7 +14,7 @@ import {
   fetchWorkerStatus,
   normalizeFolderPath, adminDb, FieldValue,
   DocumentType, PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId,
-  DEFAULT_PAGE_SIZE, DEFAULT_DOC_LIMIT,
+  DEFAULT_PAGE_SIZE, DEFAULT_DOC_LIMIT, MAX_DOC_LIMIT,
   type StoredDocument, type StoredSnippet, type StoredBoardColumn, type StoredBoardCard
 } from './shared';
 import { Timestamp } from 'firebase-admin/firestore';
@@ -157,7 +158,10 @@ async function searchWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) 
   const documents = page.documents;
 
   const documentResults = documents
-    .filter((doc: StoredDocument) => containsQueryTokens([doc.name, doc.folder, doc.content].map(String).join('\n'), queryText))
+    .filter((doc: StoredDocument) => containsQueryTokens(
+      [doc.name, doc.folder, doc.searchableContent || doc.content].map(String).join('\n'),
+      queryText
+    ))
     .slice(0, limit)
     .map(summarizeDocumentMeta);
   const snippetResults = snippets
@@ -236,7 +240,10 @@ async function readWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionConte
       });
     }
     if (queryText) {
-      filtered = filtered.filter((doc) => containsQueryTokens([doc.name, doc.folder, doc.content].map(String).join('\n'), queryText));
+      filtered = filtered.filter((doc) => containsQueryTokens(
+        [doc.name, doc.folder, doc.searchableContent || doc.content].map(String).join('\n'),
+        queryText
+      ));
     }
     docs = filtered
       .sort((left, right) => toEpoch(right.updatedAt) - toEpoch(left.updatedAt))
@@ -291,7 +298,7 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
     ? normalizeFolderPath(call.args.folder)
     : null;
   const type = typeof call.args.type === 'string' ? call.args.type : null;
-  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : DEFAULT_DOC_LIMIT, 1, 100);
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : DEFAULT_DOC_LIMIT, 1, MAX_DOC_LIMIT);
   const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
   const cursorParam = typeof call.args.cursor === 'string' ? call.args.cursor : null;
   const cursor = decodeDocumentPageCursor(cursorParam);
@@ -387,8 +394,15 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
       updatedAt: formatTimestamp(doc['updatedAt'])
     }));
 
-  const continuationNote = pageMeta.hasMore ? ` (página de ${pageMeta.scannedThisPage} doc(s); itera con cursor para más)` : '';
-  return ok(call, `Encontré ${documents.length} documento(s)${folder ? ` en "${folder}" (incluye subcarpetas)` : ''}${continuationNote}.`, { documents, page: pageMeta });
+  const continuationNote = pageMeta.hasMore
+    ? ` (página de ${pageMeta.scannedThisPage}; hay más — itera con cursor=${pageMeta.nextCursor ? '<nextCursor>' : 'null'} para la siguiente)`
+    : '';
+  return ok(call, `Encontré ${documents.length} documento(s)${folder ? ` en "${folder}" (incluye subcarpetas)` : ''}${continuationNote}.`, {
+    documents,
+    total: sorted.length,
+    page: pageMeta,
+    nextCursor: pageMeta.nextCursor
+  });
 }
 
 async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
@@ -397,7 +411,21 @@ async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
   const maxBytes = typeof call.args.maxBytes === 'number'
     ? clamp(call.args.maxBytes, 1024, 1_500_000)
     : 1_000_000;
-  const doc = await fetchDocumentForUser(documentId, ctx);
+
+  const resolved = await fetchDocumentForRead(documentId, ctx);
+  if (resolved.kind === 'not_found') {
+    throw new Error(`Documento no encontrado: "${documentId}". Usa list_documents para ver los documentos disponibles.`);
+  }
+  if (resolved.kind === 'ambiguous') {
+    const names = resolved.candidates.slice(0, 5).map(c => `"${c.name}"`).join(', ');
+    return ok(call, `Hay ${resolved.candidates.length} documento(s) que coinciden con "${documentId}" (${names}). Elige uno por id y vuelve a llamar.`, {
+      ambiguous: true,
+      query: documentId,
+      candidates: resolved.candidates
+    });
+  }
+
+  const doc = resolved.document;
   const hydrated = await loadDocumentFullContent(doc, { maxBytes });
   const summary = hydrated.source === 'storage'
     ? `Leí "${doc.name || 'Sin título'}" desde MinIO (${hydrated.bytesRead} bytes${hydrated.truncated ? ', truncado' : ''}).`
@@ -405,6 +433,7 @@ async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
       ? `Leí "${doc.name || 'Sin título'}" desde Firestore cache (${hydrated.bytesRead} bytes${hydrated.truncated ? ', truncado' : ''}). Si el contenido parece desactualizado, el doc no tenía storagePath.`
       : `"${doc.name || 'Sin título'}" está vacío o no tiene contenido textual.`;
   return ok(call, summary, {
+    ambiguous: false,
     document: {
       id: doc.id,
       name: doc.name || 'Sin título',
@@ -686,11 +715,22 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
   const queryTokens = queryText.split(/\s+/).filter(t => t.length >= 2);
   if (queryTokens.length === 0) throw new Error('query demasiado corta');
 
+  // Para docs con storagePath, Firestore `content` viene `FieldValue.delete()`d
+  // tras escribir a MinIO. El blob real de búsqueda vive en `searchableContent`
+  // (denormalizado por writeDocumentBlob/createDocumentBlob, ~4KB stripped MD).
+  // Sin esto, search_documents devolvía 0 sobre workspaces con docs grandes.
+  const buildHaystack = (doc: StoredDocument): string => {
+    const body = doc.searchableContent || doc.content || '';
+    return [doc.name, doc.folder, body].map(part => String(part || '').toLowerCase()).join('\n');
+  };
+
+  const previewSource = (doc: StoredDocument): string =>
+    doc.searchableContent || doc.content || '';
+
   const results = snap.docs
     .map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument))
     .filter(doc => {
-      const haystack = [doc.name, doc.folder, doc.content].map(part => String(part || '').toLowerCase()).join('\n');
-      // Each token must appear in the haystack (AND match)
+      const haystack = buildHaystack(doc);
       return queryTokens.every(token => haystack.includes(token));
     })
     .slice(0, limit)
@@ -699,7 +739,7 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
       name: doc.name || 'Sin título',
       folder: normalizeFolderPath(doc.folder),
       type: doc.type || DocumentType.Text,
-      preview: excerpt(doc.content || '', 180)
+      preview: excerpt(previewSource(doc), 180)
     }));
 
   const continuationNote = pageMeta.hasMore ? ` (página de ${pageMeta.scannedThisPage} doc(s); itera con cursor para más)` : '';
@@ -709,7 +749,7 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
     const orResults = snap.docs
       .map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument))
       .map(doc => {
-        const haystack = [doc.name, doc.folder, doc.content].map(part => String(part || '').toLowerCase()).join('\n');
+        const haystack = buildHaystack(doc);
         const matchCount = queryTokens.filter(token => haystack.includes(token)).length;
         return { doc, matchCount };
       })
@@ -721,7 +761,7 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
         name: doc.name || 'Sin título',
         folder: normalizeFolderPath(doc.folder),
         type: doc.type || DocumentType.Text,
-        preview: excerpt(doc.content || '', 180)
+        preview: excerpt(previewSource(doc), 180)
       }));
     return ok(call, `La búsqueda devolvió ${orResults.length} resultado(s) (coincidencia parcial)${continuationNote}.`, { results: orResults, page: pageMeta });
   }

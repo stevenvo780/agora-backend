@@ -167,7 +167,7 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
     // Document tools guidance
     base.push(
       '### Documentos',
-      '`list_documents`: Lista todos los documentos del workspace.',
+      '`list_documents`: Lista los documentos del workspace (hasta 100 por defecto, 500 máx via limit). Si page.hasMore=true, llama de nuevo con cursor=page.nextCursor para la siguiente página.',
       '`list_folders`: Lista las carpetas del workspace.',
       '`read_document`: Lee un documento por nombre o ID.',
       '`search_documents`: Busca texto dentro de los documentos.',

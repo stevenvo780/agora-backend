@@ -26,6 +26,7 @@ import type {
 } from '@/lib/agora-ai/types';
 import {
   DEFAULT_DOC_LIMIT,
+  MAX_DOC_LIMIT,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   buildPageMeta,
@@ -44,6 +45,7 @@ import {
 // ── Re-export helpers for domain modules ─────────────────────────
 export {
   DEFAULT_DOC_LIMIT,
+  MAX_DOC_LIMIT,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   buildPageMeta,
@@ -76,6 +78,7 @@ export type StoredDocument = {
   id: string;
   name?: string;
   content?: string;
+  searchableContent?: string;
   type?: string;
   folder?: string;
   workspaceId?: string;
@@ -222,16 +225,63 @@ export const containsQueryTokens = (haystack: string, queryText: string) => {
 
 // ── Document loading/resolving ───────────────────────────────────
 
-export async function resolveDocumentId(
+/**
+ * Firestore document IDs auto-generados son strings de 20 chars con
+ * alfabeto [A-Za-z0-9]. Si el input matchea, es seguro asumir que es
+ * un ID real y NO un nombre — evita scan de workspace innecesario.
+ */
+const FIRESTORE_DOC_ID_PATTERN = /^[A-Za-z0-9]{20}$/;
+
+export const looksLikeFirestoreDocId = (raw: string): boolean =>
+  FIRESTORE_DOC_ID_PATTERN.test(raw);
+
+export interface DocumentCandidate {
+  id: string;
+  name: string;
+  folder: string;
+  updatedAt: string | null;
+}
+
+export type ResolveDocumentResult =
+  | { kind: 'resolved'; id: string; snapshot: FirebaseFirestore.DocumentSnapshot | null }
+  | { kind: 'ambiguous'; candidates: DocumentCandidate[] }
+  | { kind: 'not_found' };
+
+const toCandidate = (snap: FirebaseFirestore.QueryDocumentSnapshot): DocumentCandidate => {
+  const data = snap.data() as Record<string, unknown>;
+  return {
+    id: snap.id,
+    name: typeof data.name === 'string' && data.name ? data.name : 'Sin título',
+    folder: normalizeFolderPath(typeof data.folder === 'string' ? data.folder : ''),
+    updatedAt: formatTimestamp(data.updatedAt)
+  };
+};
+
+/**
+ * Resuelve un input (nombre o ID) a un documento.
+ * - Si parece ID Firestore (regex 20 chars alfanuméricos) → lookup directo.
+ * - Si es nombre → busca match exacto, luego parcial.
+ * - Si hay ambigüedad → devuelve { kind:'ambiguous', candidates } SIN throw.
+ *   El caller decide si reportar ambigüedad como data (read_document) o como error.
+ */
+export async function tryResolveDocumentId(
   rawId: string,
   ctx: AgentExecutionContext
-): Promise<{ id: string; snapshot: FirebaseFirestore.DocumentSnapshot | null }> {
-  const directSnap = await adminDb.collection('documents').doc(rawId).get();
-  if (directSnap.exists) {
-    return { id: rawId, snapshot: directSnap };
+): Promise<ResolveDocumentResult> {
+  if (looksLikeFirestoreDocId(rawId)) {
+    const directSnap = await adminDb.collection('documents').doc(rawId).get();
+    if (directSnap.exists) {
+      return { kind: 'resolved', id: rawId, snapshot: directSnap };
+    }
+  } else {
+    const directSnap = await adminDb.collection('documents').doc(rawId).get();
+    if (directSnap.exists) {
+      return { kind: 'resolved', id: rawId, snapshot: directSnap };
+    }
   }
 
   const nameNorm = rawId.trim().toLowerCase();
+  if (!nameNorm) return { kind: 'not_found' };
   const docsRef = adminDb.collection('documents');
 
   const query = isPersonalWorkspaceId(ctx.workspaceId)
@@ -246,29 +296,45 @@ export async function resolveDocumentId(
 
   if (matches.length === 1) {
     const match = matches[0];
-    if (match) return { id: match.id, snapshot: null };
-  }
-
-  if (matches.length === 0) {
-    const partial = snap.docs.filter(d => {
-      const name = (d.data().name || '').trim().toLowerCase();
-      return name.includes(nameNorm) || nameNorm.includes(name);
-    });
-    if (partial.length === 1) {
-      const match = partial[0];
-      if (match) return { id: match.id, snapshot: null };
-    }
-    if (partial.length > 1) {
-      const names = partial.slice(0, 5).map(d => `"${d.data().name}" (${d.id})`).join(', ');
-      throw new Error(`Múltiples documentos coinciden con "${rawId}": ${names}. Usa el ID exacto.`);
-    }
+    if (match) return { kind: 'resolved', id: match.id, snapshot: null };
   }
 
   if (matches.length > 1) {
-    const names = matches.slice(0, 5).map(d => `"${d.data().name}" (${d.id})`).join(', ');
-    throw new Error(`Múltiples documentos con nombre "${rawId}": ${names}. Usa el ID exacto.`);
+    return { kind: 'ambiguous', candidates: matches.slice(0, 10).map(toCandidate) };
   }
 
+  const partial = snap.docs.filter(d => {
+    const name = (d.data().name || '').trim().toLowerCase();
+    return name.includes(nameNorm) || nameNorm.includes(name);
+  });
+  if (partial.length === 1) {
+    const match = partial[0];
+    if (match) return { kind: 'resolved', id: match.id, snapshot: null };
+  }
+  if (partial.length > 1) {
+    return { kind: 'ambiguous', candidates: partial.slice(0, 10).map(toCandidate) };
+  }
+
+  return { kind: 'not_found' };
+}
+
+/**
+ * Compat helper que sigue lanzando errores (usado por tools que mutan
+ * documentos: update/rename/move/delete/etc., donde una ambigüedad debe
+ * detener la operación). Para tools de lectura usar `tryResolveDocumentId`.
+ */
+export async function resolveDocumentId(
+  rawId: string,
+  ctx: AgentExecutionContext
+): Promise<{ id: string; snapshot: FirebaseFirestore.DocumentSnapshot | null }> {
+  const result = await tryResolveDocumentId(rawId, ctx);
+  if (result.kind === 'resolved') {
+    return { id: result.id, snapshot: result.snapshot };
+  }
+  if (result.kind === 'ambiguous') {
+    const names = result.candidates.slice(0, 5).map(c => `"${c.name}" (${c.id})`).join(', ');
+    throw new Error(`Múltiples documentos coinciden con "${rawId}": ${names}. Usa el ID exacto.`);
+  }
   throw new Error(`Documento no encontrado: "${rawId}". Usa list_documents para ver los documentos disponibles.`);
 }
 
@@ -286,6 +352,32 @@ export async function fetchDocumentForUser(documentId: string, ctx: AgentExecuti
     throw new Error('No tienes acceso a este documento');
   }
   return data;
+}
+
+/**
+ * Variante read-only que reporta ambigüedad como dato estructurado en vez
+ * de error. Devuelve `{ kind:'document', doc }` o `{ kind:'ambiguous'|'not_found' ... }`.
+ */
+export async function fetchDocumentForRead(
+  documentId: string,
+  ctx: AgentExecutionContext
+): Promise<
+  | { kind: 'document'; document: StoredDocument }
+  | { kind: 'ambiguous'; candidates: DocumentCandidate[] }
+  | { kind: 'not_found' }
+> {
+  const result = await tryResolveDocumentId(documentId, ctx);
+  if (result.kind !== 'resolved') return result;
+  const snap = result.snapshot ?? await adminDb.collection('documents').doc(result.id).get();
+  if (!snap.exists) return { kind: 'not_found' };
+  const data = { id: snap.id, ...(snap.data() as Record<string, unknown>) } as StoredDocument;
+  const docWorkspaceId = data.workspaceId || PERSONAL_WORKSPACE_ID;
+  if (!isPersonalWorkspaceId(docWorkspaceId)) {
+    await ensureWorkspaceAccess(docWorkspaceId, ctx.uid);
+  } else if (data.ownerId && data.ownerId !== ctx.uid) {
+    throw new Error('No tienes acceso a este documento');
+  }
+  return { kind: 'document', document: data };
 }
 
 /**
