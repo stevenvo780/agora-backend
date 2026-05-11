@@ -1,4 +1,16 @@
-import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+  CopyObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+  type CompletedPart
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'node:crypto';
 
@@ -147,4 +159,74 @@ export const presignPut = async (
   contentType?: string
 ): Promise<string> => {
   return getSignedUrl(getNasClient(), new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }), { expiresIn: ttlSeconds });
+};
+
+export const createMultipartUpload = async (
+  key: string,
+  contentType?: string
+): Promise<string> => {
+  const res = await getNasClient().send(new CreateMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: contentType
+  }));
+  if (!res.UploadId) {
+    throw new Error('createMultipartUpload: missing UploadId in response');
+  }
+  return res.UploadId;
+};
+
+export const presignUploadPart = async (
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  ttlSeconds = 60 * 60
+): Promise<string> => {
+  return getSignedUrl(
+    getNasClient(),
+    new UploadPartCommand({
+      Bucket: bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber
+    }),
+    { expiresIn: ttlSeconds, unhoistableHeaders: new Set(['x-amz-content-sha256']) }
+  );
+};
+
+export const completeMultipartUpload = async (
+  key: string,
+  uploadId: string,
+  parts: ReadonlyArray<{ partNumber: number; etag: string }>
+): Promise<{ location?: string; etag?: string }> => {
+  const completed: CompletedPart[] = parts
+    .slice()
+    .sort((a, b) => a.partNumber - b.partNumber)
+    .map((p) => ({ PartNumber: p.partNumber, ETag: p.etag.startsWith('"') ? p.etag : `"${p.etag}"` }));
+  const res = await getNasClient().send(new CompleteMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: completed }
+  }));
+  return { location: res.Location, etag: res.ETag };
+};
+
+export const abortMultipartUpload = async (key: string, uploadId: string): Promise<void> => {
+  await getNasClient().send(new AbortMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId
+  }));
+};
+
+export const headObjectSize = async (key: string): Promise<number | null> => {
+  try {
+    const res = await getNasClient().send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return typeof res.ContentLength === 'number' ? res.ContentLength : null;
+  } catch (e: unknown) {
+    const err = e as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) return null;
+    throw e;
+  }
 };

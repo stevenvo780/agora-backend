@@ -26,15 +26,22 @@ const NEW_TOOLS_TIER_4_WORKER = [
 ];
 
 const NEW_TOOLS_TIER_5_ST = [
-  'prove_step', 'compare_logic_profiles', 'formalize_document_section',
-  'link_concepts'
+  'prove_step', 'compare_logic_profiles', 'formalize_document_section'
+  // 'link_concepts' fue retirado del catálogo expuesto al modelo en
+  // commit 9dce7ce (handlers update/delete concepto+relación). Vive como
+  // alias legacy en SEMANTIC_TOOL_HANDLERS para back-compat, no se expone
+  // como definition ni va al registry. Ver toolExecutors/semantic.ts:365.
 ];
 
 const NEW_TOOLS_TIER_6_BOARD = ['bulk_create_board_cards'];
 
 const NEW_TOOLS_TIER_7_INTEL = [
   'outline_document', 'find_broken_links', 'find_duplicates',
-  'apply_snippet_to_document', 'semantic_search_workspace'
+  'apply_snippet_to_document'
+  // 'semantic_search_workspace' es solo un stub handler en
+  // toolExecutors/intelligence.ts (no definition pública ni mapping a
+  // capability). Cuando se promueva a tool oficial, agregarlo aquí y al
+  // catálogo en toolDefinitions.ts + accessPolicy.ts.
 ];
 
 const NEW_TOOLS_TIER_8_UI = [
