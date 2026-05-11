@@ -23,7 +23,11 @@ const ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://agora.elenxos.com,https
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ORIGINS.includes(origin)) return cb(null, true);
-    cb(new Error(`Origen no permitido: ${origin}`));
+    // origin === 'null' viene de iframes sandboxed o requests programáticos
+    // legítimos: rechazo silencioso para no contaminar Cloud Run errors.
+    if (origin === 'null') return cb(null, false);
+    console.debug(`[cors] origen no permitido: ${origin}`);
+    cb(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
