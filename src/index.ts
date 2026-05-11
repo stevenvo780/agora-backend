@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { randomUUID } from 'node:crypto';
 import { auditOnce, auditProductionEnv } from '@/lib/env';
 import { createRateLimitMiddleware } from '@/lib/rate-limit';
@@ -9,6 +10,12 @@ import { mountNextStyleApiRoutes } from './routes/nextApiRouter.js';
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', true);
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  hsts: { maxAge: 63072000, includeSubDomains: true, preload: true },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 
 const ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://agora.elenxos.com,https://agora.humanizar.cloud,http://localhost:3000')
   .split(',').map(s => s.trim()).filter(Boolean);
