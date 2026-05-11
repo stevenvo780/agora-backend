@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember } from '@/lib/server-auth';
-import { expandSubgraph } from '@/lib/citations/graph-store';
+import { expandSubgraph, loadWorkspaceDocMetaIndex } from '@/lib/citations/graph-store';
 import { isCitationKind, type CitationKind } from '@/lib/citations/types';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import { getErrorMessage } from '@/lib/error-utils';
 
-const parseDepth = (raw: string | null): number => {
+export const parseDepth = (raw: string | null): number => {
   if (!raw) return 1;
   const n = Number(raw);
   if (!Number.isFinite(n)) return 1;
   return Math.max(1, Math.min(3, Math.floor(n)));
 };
 
-const parseKinds = (raw: string | null): CitationKind[] | undefined => {
+export const parseKinds = (raw: string | null): CitationKind[] | undefined => {
   if (!raw) return undefined;
   const parts = raw.split(',').map((v) => v.trim()).filter(Boolean);
   const out: CitationKind[] = [];
@@ -22,7 +22,7 @@ const parseKinds = (raw: string | null): CitationKind[] | undefined => {
   return out.length > 0 ? out : undefined;
 };
 
-const parseFocus = (raw: string | null): string[] => {
+export const parseFocus = (raw: string | null): string[] => {
   if (!raw) return [];
   return raw.split(',').map((v) => v.trim()).filter((v) => v.length > 0);
 };
@@ -47,17 +47,21 @@ export async function GET(req: NextRequest, ctx: { params: Promise<Record<string
 
     const url = req.nextUrl;
     const focus = parseFocus(url.searchParams.get('focus'));
-    if (focus.length === 0) {
-      return NextResponse.json({ error: 'focus es requerido (csv de docIds)' }, { status: 400 });
-    }
     const depth = parseDepth(url.searchParams.get('depth'));
     const kinds = parseKinds(url.searchParams.get('kinds'));
+
+    // Si no se pasa focus, devolvemos el subgrafo workspace-wide: foco = todos
+    // los documentos del workspace. expandSubgraph aplica caps (maxNodes 500,
+    // maxEdges 2000), así no se cuelga en workspaces grandes.
+    const docMetaIndex = await loadWorkspaceDocMetaIndex(workspaceId, auth.uid);
+    const focusDocIds = focus.length > 0 ? focus : Array.from(docMetaIndex.keys());
 
     const subgraph = await expandSubgraph({
       workspaceId,
       uid: auth.uid,
-      focusDocIds: focus,
+      focusDocIds,
       depth,
+      docMetaIndex,
       ...(kinds ? { kinds } : {})
     });
     return NextResponse.json(subgraph);
