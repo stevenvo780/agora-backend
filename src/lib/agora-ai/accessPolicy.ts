@@ -328,7 +328,6 @@ const UI_EXTENDED_TOOLS = new Set([
   'agent_set_hooks',
   'agent_list_hooks',
   'agent_save_turn_snapshot',
-  'agent_replay_turn',
   'agent_list_turn_snapshots',
   'agent_clear_turn_snapshot',
   'agent_dry_run_info'

@@ -101,7 +101,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'search_documents',
-    description: 'Busca documentos por nombre, carpeta o contenido. Devuelve una página; itera page.nextCursor si page.hasMore=true.',
+    description: 'Búsqueda lexical en NOMBRES, CARPETAS y CONTENIDO de documentos (texto exacto/substring, case-insensitive). Más rápido y barato que `search_workspace` cuando sólo te interesan docs. Úsala para keywords técnicos puntuales (e.g. "modus ponens", "tableau"). Para búsqueda híbrida grafo+lexical prefiere `find_related_via_graph`. Devuelve una página; itera page.nextCursor si page.hasMore=true.',
     parameters: {
       type: 'object',
       properties: {
@@ -147,7 +147,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'inspect_workspace',
-    description: 'Construye un inventario del workspace (carpetas, documentos, snippets, tablero, semántico, worker opcional). Procesa UNA página de docs por llamada; itera page.nextCursor si page.hasMore=true para escanear workspaces grandes.',
+    description: 'Inventario estructural del workspace: carpetas (con conteos), documentos (sin contenido), snippets, tablero, semántico, worker (opcional). Es el PRIMER paso obligatorio para auditorías generales ("dame un overview"), antes de decidir qué leer en detalle. NO trae contenidos completos — para eso usa `read_workspace_bundle` después. Procesa una página por llamada; itera page.nextCursor.',
     parameters: {
       type: 'object',
       properties: {
@@ -161,7 +161,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'search_workspace',
-    description: 'Busca en una página del workspace: documentos, snippets, conceptos semánticos y tarjetas Kanban. Itera page.nextCursor si page.hasMore=true.',
+    description: 'Búsqueda lexical AMPLIA: documentos + snippets + conceptos semánticos + tarjetas Kanban en una sola llamada. Úsala cuando NO sepas dónde está la información (puede estar en cualquier capa) o el user pregunte "busca X" sin acotar tipo. Si sabes que sólo buscas docs, prefiere `search_documents` (más barato). Itera page.nextCursor.',
     parameters: {
       type: 'object',
       properties: {
@@ -176,7 +176,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'read_workspace_bundle',
-    description: 'Lee un paquete de contexto del workspace. Procesa una página del workspace por llamada (excepto si das documentIds explícitos). Itera page.nextCursor si page.hasMore=true.',
+    description: 'Lee un paquete de contexto pre-curado: varios docs (por ids/folder/query) + opcionalmente snippets + conceptos semánticos en UNA llamada. Úsala cuando ya sabes QUÉ leer (e.g. tras `inspect_workspace` o `expand_context`) y quieres traer todo en un viaje en vez de N `read_document`. Procesa una página si das folder/query; si das documentIds explícitos lee todos ellos directo. Itera page.nextCursor.',
     parameters: {
       type: 'object',
       properties: {
@@ -820,7 +820,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'get_document_content_at_revision',
-    description: 'Devuelve el contenido de una revisión específica del documento. Hoy NO está implementado en Firestore (no hay versiones); devuelve sugerencia de usar git_log + git_show del worker.',
+    description: 'DEPRECATED: no hay historial de revisiones en Firestore — esta tool sólo devuelve la sugerencia de usar git_log + git_show. Para historial real usa `git_log` + `read_worker_file` sobre el archivo en /workspace. Se removerá en v2 del agente.',
     parameters: {
       type: 'object',
       properties: {
@@ -848,7 +848,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'download_workspace_bundle',
-    description: 'Devuelve el manifiesto (lista de docs con metadata) de todo el workspace o de una carpeta. Para el zip binario el cliente debe llamar /api/workspaces/:id/export. Read-only.',
+    description: 'DEPRECATED para zip: sólo devuelve manifiesto (lista de docs + metadata). Para zip binario real el usuario debe usar el botón "Exportar" del workspace. Si necesitas el listado completo en una llamada, prefiere `inspect_workspace` (estructura) o `read_workspace_bundle` (con contenidos). Read-only.',
     parameters: {
       type: 'object',
       properties: {
@@ -953,7 +953,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'git_create_branch',
-    description: 'git checkout -b <branch> en el worker.',
+    description: 'Crea una nueva rama y la activa (`git checkout -b <branch>`) dentro del worker. Úsala antes de hacer cambios que quieras aislar de main. Si la rama ya existe, fallará — entonces usa `git_checkout` directamente.',
     parameters: {
       type: 'object',
       properties: { branch: { type: 'string' } },
@@ -963,7 +963,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'git_checkout',
-    description: 'git checkout <target> en el worker (branch o commit hash).',
+    description: 'Ejecuta `git checkout <target>` dentro del worker (branch existente o commit hash). Modifica el working tree del worker. Úsala para cambiar de rama o ir a un commit puntual. Si la rama no existe, prefiere `git_create_branch`. Cambios sin commit pueden bloquear el checkout — usa `git_status` antes.',
     parameters: {
       type: 'object',
       properties: { target: { type: 'string' } },
@@ -1026,7 +1026,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'kill_worker_process',
-    description: 'Envía señal a un proceso por PID dentro del worker. Requiere confirmed:true.',
+    description: 'Envía una señal (TERM, KILL, HUP, INT, QUIT) a un proceso por PID dentro del worker. Requiere confirmed:true. Úsala para terminar procesos colgados que detectaste con `run_worker_command "ps aux"`. Default signal=TERM (gracioso); usa KILL solo si TERM no respondió en ~5s.',
     parameters: {
       type: 'object',
       properties: {
@@ -1040,12 +1040,12 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'restart_worker',
-    description: 'Reinicia el worker del workspace. Hoy devuelve sugerencia (`pkill -f /app/index.js`) — el agente desde Cloud Run no tiene control directo sobre Docker en stev-server.',
+    description: 'DEPRECATED: el agente desde Cloud Run no controla Docker en humanizar2. Esta tool sólo devuelve la sugerencia (`pkill -f /app/index.js`) — el daemon `agora-host-sync` revive containers caídos automáticamente. Para forzar restart usa `run_worker_command` con `pkill -f /app/index.js`. Se removerá en v2.',
     parameters: { type: 'object', properties: { confirmed: { type: 'boolean' } }, additionalProperties: false }
   },
   {
     name: 'start_worker',
-    description: 'Crea el worker container si no existe. Requiere sudo en stev-server (no expuesto desde Cloud Run).',
+    description: 'DEPRECATED: requiere sudo en humanizar2 (`edu-worker-manager add <wsId>`), no expuesto desde Cloud Run. Esta tool sólo devuelve la sugerencia. Si el workspace no tiene worker, indica al usuario que lo solicite a admin. Se removerá en v2.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -1244,22 +1244,22 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'get_subscription_status',
-    description: 'Plan actual del user (free, pro, ...) y datos de la suscripción si existe.',
+    description: 'Devuelve el plan vigente del usuario (free, pro, etc.), fecha de expiración y método de pago si existe. Úsala cuando el user pregunte: "¿qué plan tengo?", "¿me caducó la suscripción?", "¿puedo usar X feature pago?". NO uses para invitar miembros u otras acciones de workspace.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'list_quota',
-    description: 'Cuotas informativas: documentCount, workspacesAccessible, storageBytesUsed.',
+    description: 'Cuotas globales del usuario: documentCount (total entre workspaces), workspacesAccessible, storageBytesUsed. Úsala para preguntas tipo "¿cuántos docs tengo en total?", "¿cuánto espacio uso?", "¿en cuántos workspaces participo?". Para el detalle de un workspace concreto usa `get_workspace_quota_detail`.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'get_workspace_quota_detail',
-    description: 'Detalle del workspace activo (name, type, plan).',
+    description: 'Detalle del workspace activo: nombre, tipo (personal/shared), plan asociado, cuota local. Úsala antes de operaciones que dependen del plan (e.g. invitar miembros sólo en shared). Para datos cross-workspace usa `list_quota`.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'duplicate_document',
-    description: 'Clona un documento con un nuevo nombre opcional. Hidrata el contenido REAL desde MinIO antes de duplicar. Si no se da newName, usa "<original> (copia)".',
+    description: 'Clona un documento con su contenido completo (hidrata desde MinIO). Si no se da `newName`, usa "<original> (copia)". Acepta `targetFolder` para clonar en otro path. Úsala para crear plantillas a partir de existentes, hacer backups locales antes de cambios masivos, o "duplica este doc en otra carpeta".',
     parameters: {
       type: 'object',
       properties: {
@@ -1273,7 +1273,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'get_storage_usage',
-    description: 'Resumen de uso de espacio del workspace activo: documentCount, totalBytes, minioBytes, firestoreBytes.',
+    description: 'Resumen real de uso de espacio del workspace: documentCount, totalBytes, minioBytes (storage), firestoreBytes (índice). Úsala para "¿cuánto espacio uso?", "¿estoy cerca del límite?", para diagnosticar workspaces hinchados. Para encontrar los docs grandes específicos usa `find_large_documents`.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -1292,7 +1292,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'list_recent_workspace_activity',
-    description: 'Documentos editados en las últimas N horas, ordenados por updatedAt desc.',
+    description: 'Lista los documentos editados en las últimas `sinceHours` horas (default 24, máx 720=30 días), orden updatedAt desc. Úsala para "¿qué he tocado hoy?", "qué cambió esta semana", o como punto de entrada para retomar trabajo reciente.',
     parameters: {
       type: 'object',
       properties: {
@@ -1304,17 +1304,17 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'list_favorites',
-    description: 'Devuelve los documentos marcados como favoritos por el usuario en este workspace.',
+    description: 'Lista los documentos que el usuario marcó como favoritos en este workspace. Úsala para "muéstrame mis favoritos", "abre mis docs marcados", o cuando vayas a ofrecer atajos. NO uses para listar todos los docs (eso es `list_documents`).',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'add_favorite',
-    description: 'Marca un documento como favorito.',
+    description: 'Marca un documento como favorito del usuario. Úsala cuando el user diga "marca esto", "agrega a favoritos", "ponle estrella". Ejemplo: add_favorite({ documentId: "Notas de clase 3" }).',
     parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
   },
   {
     name: 'remove_favorite',
-    description: 'Quita un documento de favoritos.',
+    description: 'Desmarca un documento como favorito. Úsala para "quita esto de favoritos", "saca la estrella".',
     parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
   },
   {
@@ -1329,67 +1329,67 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'list_active_terminal_sessions',
-    description: 'Sesiones de terminal/PTY activas del worker del workspace.',
+    description: 'Lista las sesiones de terminal/PTY activas del worker del workspace (devuelve sessionId, abierto desde, last-active). Útil para diagnosticar "tengo una terminal colgada" o cuando vas a ejecutar comandos largos y quieres saber si ya hay PTY abiertas.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'kill_terminal_session',
-    description: 'Cierra una sesión de terminal por id. Hoy devuelve sugerencia (no hay endpoint REST directo desde Cloud Run).',
+    description: 'DEPRECATED: no hay endpoint REST de Cloud Run hacia el hub para cerrar PTY. Esta tool sólo devuelve sugerencia. Para terminar procesos del workspace usa `kill_worker_process` (mata por PID dentro del worker). Se removerá en v2.',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' }, confirmed: { type: 'boolean' } }, required: ['sessionId'], additionalProperties: false }
   },
   {
     name: 'archive_board_card',
-    description: 'Archiva (oculta) o desarchiva una tarjeta Kanban. Más suave que delete.',
+    description: 'Archiva (oculta) o desarchiva (archived:false) una tarjeta Kanban sin borrarla. Más suave que `delete_board_card` — la tarjeta sigue en BD pero no aparece en el tablero. Úsala para tareas "hechas hace tiempo que no quieres ver" o para limpiar visualmente sin perder historia.',
     parameters: { type: 'object', properties: { cardId: { type: 'string' }, archived: { type: 'boolean' } }, required: ['cardId'], additionalProperties: false }
   },
   {
     name: 'get_repo_info',
-    description: 'Info del repo Forgejo asociado al workspace activo (org, nombre, clone hint).',
+    description: 'Info del repo Forgejo asociado al workspace: org "agora", nombre, URL de clone HTTPS, default branch. Útil para responder "¿cuál es la URL del repo?", "¿cómo clono este workspace?", o antes de operaciones git que requieren el repo provisionado.',
     parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
   },
   {
     name: 'list_workspace_repos',
-    description: 'Lista todos los repos Forgejo accesibles para el usuario.',
+    description: 'Lista todos los repos Forgejo accesibles para el user en la org "agora" (un repo por workspace al que tiene acceso). Útil para "¿qué repos tengo?", para auditar el catálogo Forgejo.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'provision_workspace_git',
-    description: 'Idempotente: asegura que el repo Forgejo del workspace exista y el user tenga acceso. Útil si el repo se borró.',
+    description: 'Idempotente: asegura que el repo Forgejo del workspace exista y el user tenga acceso (crea repo + agrega colaborador). Útil cuando `get_repo_info` falla con "repo no existe", o tras restaurar Forgejo. Seguro de llamar siempre — si ya está, no hace nada.',
     parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
   },
   {
     name: 'extract_text_from_pdf',
-    description: 'Extrae el texto plano de un documento PDF subido al workspace (requiere storagePath en MinIO). Read-only.',
+    description: 'Extrae el texto plano de un PDF subido al workspace (lee binario de MinIO via storagePath y corre extractor). Read-only. Úsala cuando el user adjunte un PDF y quiera "resumir/analizar/buscar" su contenido — antes de pasar el texto a `summarize_document` o citar pasajes. Si el doc no tiene storagePath, fue subido como texto plano: usa `read_document` directamente.',
     parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
   },
   {
     name: 'inspect_sync_outbox',
-    description: 'Eventos sync pendientes del workspace en syncEventsOutbox.',
+    description: 'Lista los eventos de sincronización pendientes del workspace que aún no se enviaron a clientes via RTDB. Úsala cuando el user reporte "el cambio no aparece", "el archivo no se sincronizó" o para diagnosticar desfase Firestore↔front. Si el outbox crece, el drainer cron `/api/cron/drain-outbox` está atrasado.',
     parameters: { type: 'object', properties: { limit: { type: 'number' } }, additionalProperties: false }
   },
   {
     name: 'force_emit_sync_ping',
-    description: 'Emite manualmente un ping RTDB para refrescar clientes. op = created|updated|deleted|refresh.',
+    description: 'Emite manualmente un ping RTDB (`sync-events/<workspaceId>`) para forzar refresh en clientes conectados. `op` = created|updated|deleted|refresh. Úsala cuando un cliente quedó desincronizado y necesita reconciliar sin recargar página. NO uses por defecto: el sistema ya emite pings en cada write.',
     parameters: { type: 'object', properties: { op: { type: 'string' }, path: { type: 'string' } }, additionalProperties: false }
   },
   {
     name: 'get_document_sync_state',
-    description: 'Estado de sincronización de un documento: synced | storage-only | firestore-only | empty.',
+    description: 'Diagnostica el estado de sync de un documento: `synced` (Firestore+MinIO ok), `storage-only` (sólo en MinIO, falta Firestore), `firestore-only` (sólo metadata, sin contenido en MinIO), `empty`. Úsala cuando el user reporte "este doc no aparece bien", "veo el nombre pero está vacío", para auditar drift Firestore↔MinIO.',
     parameters: { type: 'object', properties: { documentId: { type: 'string' } }, required: ['documentId'], additionalProperties: false }
   },
   {
     name: 'accept_invite',
-    description: 'Acepta una invitación pendiente al workspace. Requiere que el user haya sido añadido a pendingInvites.',
+    description: 'Acepta una invitación pendiente al workspace especificado. El user pasa a ser miembro con el rol que definió quien invitó. Úsala cuando el user diga "acepta la invitación de X", "entrar al workspace Y". El user debe haber sido añadido previamente a pendingInvites por el owner.',
     parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
   },
   {
     name: 'decline_invite',
-    description: 'Rechaza una invitación pendiente al workspace.',
+    description: 'Rechaza una invitación pendiente al workspace (el user no entra y se elimina de pendingInvites). Úsala para "rechaza la invitación", "no quiero entrar a ese workspace".',
     parameters: { type: 'object', properties: { workspaceId: { type: 'string' } }, additionalProperties: false }
   },
   {
     name: 'find_orphaned_concepts',
-    description: 'Conceptos del glosario semántico que no tienen relaciones (candidatos a cleanup).',
+    description: 'Lista conceptos del glosario semántico que no tienen relaciones (candidatos a cleanup, fusión con `merge_concepts`, o documentación adicional). Úsala para auditorías de salud semántica o cuando el user pida "limpia el glosario".',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -1399,7 +1399,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'start_subscription_checkout',
-    description: 'Sugiere abrir el panel de pricing en el cliente. El checkout real corre en el navegador con MercadoPago Bricks.',
+    description: 'Sugiere al frontend abrir el panel de pricing/checkout para el plan indicado (free|pro|...). El checkout real corre en navegador con MercadoPago Bricks; esta tool sólo emite la señal UI. Úsala cuando el user pida "quiero suscribirme", "upgrade a pro", "pagar el plan".',
     parameters: { type: 'object', properties: { plan: { type: 'string' } }, required: ['plan'], additionalProperties: false }
   },
   {
@@ -1409,22 +1409,22 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'find_unused_snippets',
-    description: 'Snippets cuyo título no aparece referenciado en ningún documento del workspace (heurística).',
+    description: 'Detecta snippets cuyo título no aparece referenciado en ningún documento del workspace (heurística texto, no semántica). Útil para limpieza: el user dice "qué snippets no estoy usando" — sugerir borrar o reorganizar. Puede tener falsos positivos si referencian por contenido.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'list_dictionary_words',
-    description: 'Palabras del diccionario personal del linter (silencia falsos positivos del spell-check).',
+    description: 'Lista las palabras del diccionario personal del linter — son palabras que el spell-check ya NO marca como error. Úsala antes de añadir/quitar para evitar duplicados, o cuando el user pregunte "¿qué palabras ignora el linter?".',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'add_word_to_dictionary',
-    description: 'Añade una palabra al diccionario personal del linter.',
+    description: 'Añade una palabra al diccionario personal del linter para que deje de marcarla como error de ortografía. Úsala cuando el user diga "no es un error", "agrega [palabra] al diccionario", "ignora esta palabra". Útil para tecnicismos del dominio (e.g. "modus", "tableau", "Quine").',
     parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'], additionalProperties: false }
   },
   {
     name: 'remove_word_from_dictionary',
-    description: 'Quita una palabra del diccionario personal.',
+    description: 'Quita una palabra del diccionario personal del linter (volverá a marcarla como error). Úsala cuando se agregó por error.',
     parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'], additionalProperties: false }
   },
   {
@@ -1455,12 +1455,12 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'agent_plan_get',
-    description: 'Devuelve el plan activo y el estado de cada paso.',
+    description: 'Devuelve el plan activo de la conversación (steps + status de cada uno). Úsala al inicio de un turno cuando ya hay plan en curso, antes de decidir qué paso atacar a continuación. Si no hay plan, devuelve null y debes considerar crear uno con `agent_plan_set`.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'agent_plan_clear',
-    description: 'Descarta el plan activo (la tarea terminó o cambió de rumbo).',
+    description: 'Descarta el plan activo. Úsala cuando la tarea concluyó (todos los steps en done) o cuando el user cambió completamente de rumbo y el plan ya no aplica. Si solo cambian algunos pasos, prefiere `agent_plan_set` (reemplaza).',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -1479,7 +1479,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'agent_recall_memory',
-    description: 'Recupera una memoria por key o todas las del scope si key vacío.',
+    description: 'Recupera una memoria persistente del user (scope=user) o del workspace (scope=workspace). Si pasas `key` devuelve esa entrada; si lo omites devuelve TODAS las del scope. Úsala al INICIO de tareas relevantes para chequear preferencias previas, dominio del user, decisiones de diseño guardadas. Ejemplo: `agent_recall_memory({ scope: "user" })` antes de proponer un perfil lógico.',
     parameters: {
       type: 'object',
       properties: {
@@ -1491,12 +1491,12 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'agent_list_memories',
-    description: 'Lista los keys de memorias guardadas en ambos scopes (user y workspace).',
+    description: 'Lista los KEYS de memorias persistentes guardadas — un inventario barato para saber qué hay. Si necesitas el valor, llama después `agent_recall_memory({ key })`. Úsala cuando vayas a guardar algo nuevo para chequear si ya existe key relacionado.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'agent_forget',
-    description: 'Elimina una memoria específica.',
+    description: 'Elimina una memoria persistente específica por key+scope. Úsala cuando el user diga "olvida X", "ya no apliques esa preferencia", o cuando detectes que la memoria es obsoleta.',
     parameters: {
       type: 'object',
       properties: {
@@ -1509,13 +1509,13 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'spawn_subagent',
-    description: 'Stub: en el futuro lanzará un subagente con context limitado. Hoy devuelve contrato y sugiere usar agent_plan_set como fallback.',
+    description: 'Declara una subtarea independiente con un prompt explícito y scope acotado (read-only|workspace|full). HOY el spawn real está pendiente — la tool devuelve el contrato registrado para que orquestes la subtarea inline (con agent_plan_set + ejecutar pasos). Úsala cuando: (a) hay una tarea autocontenida que merecería su propio loop de pensamiento (ej. "audita los duplicados", "limpia conceptos huérfanos"); (b) quieres separar permisos de la conversación principal. NO uses para acciones triviales: para eso ejecuta la tool directamente.',
     parameters: {
       type: 'object',
       properties: {
-        task: { type: 'string' },
-        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'] },
-        maxIterations: { type: 'number' }
+        task: { type: 'string', description: 'Prompt explícito de la subtarea (≤500 chars).' },
+        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'], description: 'Permisos del subagent: read-only sólo lee; workspace puede editar docs/snippets/board; full incluye worker y git.' },
+        maxIterations: { type: 'number', description: 'Budget de iteraciones para el subagent (1..15, default 5).' }
       },
       required: ['task'],
       additionalProperties: false
@@ -1537,7 +1537,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'agent_list_hooks',
-    description: 'Lista los hooks configurados.',
+    description: 'Lista los hooks configurados (PreToolUse, PostToolUse, UserPromptSubmit). Úsala antes de cambios con `agent_set_hooks` para no perder los existentes, o cuando el user pregunte "¿qué hooks tengo activos?".',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -1555,28 +1555,18 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     }
   },
   {
-    name: 'agent_replay_turn',
-    description: 'Devuelve un snapshot guardado previamente para que el modelo lo use como contexto y re-ejecute. Stub: no re-ejecuta automáticamente.',
-    parameters: {
-      type: 'object',
-      properties: { turnId: { type: 'string' } },
-      required: ['turnId'],
-      additionalProperties: false
-    }
-  },
-  {
     name: 'agent_list_turn_snapshots',
-    description: 'Lista los snapshots de turns guardados.',
+    description: 'Lista los snapshots de turns guardados previamente con `agent_save_turn_snapshot` (orden desc por fecha). Útil para retomar un trabajo: el user dice "sigue lo de ayer", listas snapshots, eliges el relevante. Devuelve turnId + summary.',
     parameters: { type: 'object', properties: { limit: { type: 'number' } }, additionalProperties: false }
   },
   {
     name: 'agent_clear_turn_snapshot',
-    description: 'Elimina un snapshot.',
+    description: 'Elimina un snapshot específico por turnId. Úsala cuando el snapshot ya no es relevante o ocupa espacio. Para borrar todos no hay tool — debes iterar y llamar por cada turnId.',
     parameters: { type: 'object', properties: { turnId: { type: 'string' } }, required: ['turnId'], additionalProperties: false }
   },
   {
     name: 'agent_dry_run_info',
-    description: 'Devuelve si el contexto actual está en modo dry-run (tools destructivas no aplican cambios reales).',
+    description: 'Devuelve si el contexto actual está en modo dry-run. En dry-run las tools destructivas (delete_*, update_document, write_worker_file) NO aplican; devuelven `{ ok:true, dryRun:true, wouldHaveDone:... }`. Úsala al iniciar tareas destructivas para saber si vas a aplicar o sólo simular — y comunícalo al user para evitar declarar falsos cambios.',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
   },
   {

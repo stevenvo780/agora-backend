@@ -225,23 +225,6 @@ async function agentSaveTurnSnapshot(call: AgentToolCall, ctx: AgentExecutionCon
   return ok(call, `Turn snapshot guardado: ${turnId}.`, { turnId });
 }
 
-async function agentReplayTurn(call: AgentToolCall, ctx: AgentExecutionContext) {
-  const turnId = String(call.args.turnId || '').trim();
-  if (!turnId) throw new Error('turnId es requerido');
-  const snap = await turnSnapshotRef(ctx.uid, turnId).get();
-  if (!snap.exists) throw new Error(`Turn snapshot ${turnId} no encontrado`);
-  const data = snap.data() as Record<string, unknown>;
-  return ok(call, `Turn ${turnId} cargado para replay. Re-ejecutar las tool calls registradas con su args original es responsabilidad del agente.`, {
-    turnId,
-    summary: data.summary,
-    messageCount: Array.isArray(data.messages) ? (data.messages as unknown[]).length : 0,
-    toolCallCount: Array.isArray(data.toolCalls) ? (data.toolCalls as unknown[]).length : 0,
-    snapshot: data,
-    notImplementedFully: true,
-    suggestion: 'el replay automático requeriría un sub-loop del provider; por ahora puedes pedirle al modelo "ejecuta de nuevo lo que hicimos en X" y leer este snapshot como contexto'
-  });
-}
-
 async function agentListTurnSnapshots(call: AgentToolCall, ctx: AgentExecutionContext) {
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 100);
   const snap = await adminDb.collection('users').doc(ctx.uid).collection('agentTurnSnapshots')
@@ -286,7 +269,6 @@ export const AGENT_CONTROL_TOOL_HANDLERS: Record<string, ToolHandler> = {
   agent_set_hooks: agentSetHooks,
   agent_list_hooks: agentListHooks,
   agent_save_turn_snapshot: agentSaveTurnSnapshot,
-  agent_replay_turn: agentReplayTurn,
   agent_list_turn_snapshots: agentListTurnSnapshots,
   agent_clear_turn_snapshot: agentClearTurnSnapshot,
   agent_dry_run_info: agentDryRunInfo
