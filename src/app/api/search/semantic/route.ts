@@ -23,6 +23,11 @@ interface SemanticScanCursor {
   id: string;
 }
 
+interface SemanticPageCursor {
+  scan: SemanticScanCursor | null;
+  offset: number;
+}
+
 const encodeScanCursor = (cursor: SemanticScanCursor): string =>
   Buffer.from(JSON.stringify({ u: cursor.updatedAtMs, i: cursor.id }), 'utf8').toString('base64url');
 
@@ -36,6 +41,42 @@ const decodeScanCursor = (raw: string | null | undefined): SemanticScanCursor | 
     if (typeof parsed.i !== 'string' || parsed.i.length === 0) return null;
     return { updatedAtMs: parsed.u, id: parsed.i };
   } catch {
+    return null;
+  }
+};
+
+const encodePageCursor = (cursor: SemanticPageCursor): string =>
+  Buffer.from(
+    JSON.stringify({
+      s: cursor.scan ? { u: cursor.scan.updatedAtMs, i: cursor.scan.id } : null,
+      o: cursor.offset
+    }),
+    'utf8'
+  ).toString('base64url');
+
+const decodePageCursor = (raw: string | null | undefined): SemanticPageCursor | null => {
+  if (!raw) return null;
+  try {
+    const buf = Buffer.from(raw, 'base64url');
+    if (buf.byteLength === 0) return null;
+    const parsed = JSON.parse(buf.toString('utf8')) as { s?: unknown; o?: unknown };
+    const offset = typeof parsed.o === 'number' && Number.isFinite(parsed.o) ? Math.max(0, Math.floor(parsed.o)) : null;
+    if (offset === null) {
+      const legacyScan = decodeScanCursor(raw);
+      if (legacyScan) return { scan: legacyScan, offset: 0 };
+      return null;
+    }
+    let scan: SemanticScanCursor | null = null;
+    if (parsed.s && typeof parsed.s === 'object') {
+      const s = parsed.s as { u?: unknown; i?: unknown };
+      if (typeof s.u === 'number' && Number.isFinite(s.u) && typeof s.i === 'string' && s.i.length > 0) {
+        scan = { updatedAtMs: s.u, id: s.i };
+      }
+    }
+    return { scan, offset };
+  } catch {
+    const legacyScan = decodeScanCursor(raw);
+    if (legacyScan) return { scan: legacyScan, offset: 0 };
     return null;
   }
 };
@@ -85,7 +126,6 @@ export async function POST(req: NextRequest) {
       : PERSONAL_WORKSPACE_ID;
     const query = typeof body.query === 'string' ? body.query : '';
     const limit = typeof body.limit === 'number' ? body.limit : DEFAULT_LIMIT;
-    const offset = typeof body.offset === 'number' ? body.offset : 0;
     const kinds = Array.isArray(body.kinds)
       ? body.kinds.filter((kind): kind is SearchResultKind => typeof kind === 'string' && isSearchResultKind(kind))
       : undefined;
@@ -93,9 +133,13 @@ export async function POST(req: NextRequest) {
       ? Math.floor(body.pageSize)
       : DEFAULT_PAGE_SIZE;
     const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, rawPageSize));
-    const cursor = typeof body.cursor === 'string' && body.cursor.length > 0
-      ? decodeScanCursor(body.cursor)
+    const pageCursor = typeof body.cursor === 'string' && body.cursor.length > 0
+      ? decodePageCursor(body.cursor)
       : null;
+    const cursor: SemanticScanCursor | null = pageCursor?.scan ?? null;
+    const offset = pageCursor
+      ? pageCursor.offset
+      : typeof body.offset === 'number' ? body.offset : 0;
 
     let queryRef: FirebaseFirestore.Query = adminDb.collection('documents');
 
@@ -230,6 +274,17 @@ export async function POST(req: NextRequest) {
       kinds
     });
 
+    const scanHasMore = nextScanCursor !== null;
+    const scanCursorDecoded = scanHasMore ? decodeScanCursor(nextScanCursor) : null;
+    // Componer cursor: avanzar offset si hay más resultados en el scan actual;
+    // si se consumió el scan pero hay más páginas, resetear offset y avanzar scan.
+    let combinedNextCursor: string | null = null;
+    if (hasMore) {
+      combinedNextCursor = encodePageCursor({ scan: cursor, offset: resultOffset + results.length });
+    } else if (scanHasMore && scanCursorDecoded) {
+      combinedNextCursor = encodePageCursor({ scan: scanCursorDecoded, offset: 0 });
+    }
+
     return NextResponse.json({
       results,
       meta: {
@@ -238,11 +293,11 @@ export async function POST(req: NextRequest) {
         scannedDocuments: docs.length,
         totalCandidates,
         offset: resultOffset,
-        hasMore,
+        hasMore: hasMore || scanHasMore,
         mode: 'heuristic-v1',
         pageSize,
-        scanHasMore: nextScanCursor !== null,
-        nextCursor: nextScanCursor
+        scanHasMore,
+        nextCursor: combinedNextCursor
       }
     });
   } catch (error: unknown) {

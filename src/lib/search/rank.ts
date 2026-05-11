@@ -35,6 +35,7 @@ type ExtractedSignals = {
 };
 
 const MAX_RESULTS_DEFAULT = 20;
+const MAX_RESULTS_HARD_CAP = 10_000;
 const MIN_TOKEN_LENGTH = 2;
 const FRONTMATTER_REGEX = /^---\s*\n([\s\S]*?)\n---\s*/;
 const HUMANITIES_SYNONYMS: Record<string, string[]> = {
@@ -489,7 +490,7 @@ export const buildSemanticSearchResults = (params: {
     return left.title.localeCompare(right.title, 'es');
   });
 
-  const limit = Math.max(1, Math.min(params.limit ?? MAX_RESULTS_DEFAULT, 50));
+  const limit = Math.max(1, Math.min(params.limit ?? MAX_RESULTS_DEFAULT, MAX_RESULTS_HARD_CAP));
   const offset = Math.max(0, params.offset ?? 0);
   const deduped: SearchResultItem[] = [];
   const seen = new Set<string>();
