@@ -5,8 +5,20 @@ import {
   resolveWorkerWorkspaceId, loadWorkspaceDocuments,
   getErrorMessage, DocumentType, DEFAULT_PAGE_SIZE
 } from './shared';
+import {
+  isDestructiveShellCommand,
+  isSafeReadOnlyCommand,
+  validateWorkspaceRelPath,
+  shellQuote,
+  buildReadCommand,
+  buildWriteCommand
+} from './worker-shell';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
+
+function logAgentWorkerCall(tool: string, detail: string) {
+  console.warn(`[agent/worker] ${tool} ${detail}`);
+}
 
 const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
   { pattern: /\bsudo\b|\bsu\s+-?|\bpasswd\b/, message: 'Comandos de privilegios o cambio de usuario no permitidos.' },
@@ -31,8 +43,19 @@ async function runWorkerCommand(call: AgentToolCall, ctx: AgentExecutionContext)
   const maxOutputChars = clamp(typeof call.args.maxOutputChars === 'number' ? call.args.maxOutputChars : 12000, 1000, 20000);
   const expectChanges = call.args.expectChanges === true;
   const confirmed = call.args.confirmed === true;
+  // Política consistente:
+  // 1) Si `expectChanges` declarado por el agente o el comando es destructivo
+  //    (rm, dd, mv hacia fuera de /tmp/agora-tmp, redirect overwrite, etc.)
+  //    SIEMPRE exigir confirmación, ignorando lo que el agente envíe en
+  //    `confirmed`. El cliente debe hacer round-trip explícito.
+  // 2) Si el comando es safe-read (ls/cat/grep/find/head/tail/pwd/wc/stat/...)
+  //    se ejecuta sin confirmación.
+  // 3) Cualquier otro comando (escrituras no detectadas, npm/pip/git, etc.)
+  //    también pide confirmación por defecto.
+  const isDestructive = expectChanges || isDestructiveShellCommand(command);
+  const needsConfirmation = isDestructive || !isSafeReadOnlyCommand(command);
 
-  if (!confirmed) {
+  if (needsConfirmation && !confirmed) {
     const reason = typeof call.args.reason === 'string' && call.args.reason.trim()
       ? `\n\nMotivo: ${call.args.reason.trim()}`
       : '';
@@ -40,9 +63,11 @@ async function runWorkerCommand(call: AgentToolCall, ctx: AgentExecutionContext)
       command,
       cwd,
       timeoutMs,
-      expectChanges
+      expectChanges,
+      destructive: isDestructive
     });
   }
+  logAgentWorkerCall('run_worker_command', `${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (cwd=${cwd}, destructive=${isDestructive})`);
 
   const result = await fetchNexusJson<{
     requestId: string;
@@ -86,10 +111,6 @@ async function runWorkerCommand(call: AgentToolCall, ctx: AgentExecutionContext)
     durationMs: result.durationMs,
     mayHaveChangedWorkspace: expectChanges
   });
-}
-
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function normalizeWorkerReadPath(rawPath: unknown) {
@@ -417,8 +438,9 @@ async function gitDiff(call: AgentToolCall, ctx: AgentExecutionContext) {
   const path = typeof call.args.path === 'string' ? call.args.path.trim() : '';
   const staged = call.args.staged === true;
   const cmd = staged
-    ? `cd /workspace && git diff --cached --stat && echo --- && git diff --cached ${path ? `-- ${shellQuote(path)}` : ''} | head -300`
-    : `cd /workspace && git diff --stat && echo --- && git diff ${path ? `-- ${shellQuote(path)}` : ''} | head -300`;
+    ? `git diff --cached --stat && echo --- && git diff --cached ${path ? `-- ${shellQuote(path)}` : ''} | head -300`
+    : `git diff --stat && echo --- && git diff ${path ? `-- ${shellQuote(path)}` : ''} | head -300`;
+  logAgentWorkerCall('git_diff', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd);
   return ok(call, `git diff (${staged ? 'staged' : 'unstaged'}${path ? ` · ${path}` : ''}): exit ${result.exitCode ?? 0}.`, {
     diff: result.stdout, stderr: result.stderr, staged, path: path || null, exitCode: result.exitCode
@@ -428,7 +450,8 @@ async function gitDiff(call: AgentToolCall, ctx: AgentExecutionContext) {
 async function gitPull(call: AgentToolCall, ctx: AgentExecutionContext) {
   const remote = String(call.args.remote || 'origin').trim() || 'origin';
   const branch = typeof call.args.branch === 'string' ? call.args.branch.trim() : '';
-  const cmd = `cd /workspace && git pull ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  const cmd = `git pull ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  logAgentWorkerCall('git_pull', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd, '.', 30000);
   return ok(call, `git pull desde ${remote}${branch ? `/${branch}` : ''}: exit ${result.exitCode ?? 0}.`, {
     output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
@@ -442,7 +465,8 @@ async function gitPushBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
   if (!confirmed) {
     return confirm(call, `¿Hacer git push${branch ? ` de la rama "${branch}"` : ''} hacia ${remote}?`, { remote, branch });
   }
-  const cmd = `cd /workspace && git push ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  const cmd = `git push ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
+  logAgentWorkerCall('git_push_branch', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd, '.', 30000);
   return ok(call, `git push hacia ${remote}${branch ? `/${branch}` : ''}: exit ${result.exitCode ?? 0}.`, {
     output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
@@ -453,7 +477,8 @@ async function gitCreateBranch(call: AgentToolCall, ctx: AgentExecutionContext) 
   const branch = String(call.args.branch || '').trim();
   if (!branch) throw new Error('branch es requerido');
   if (!/^[A-Za-z0-9_./-]+$/.test(branch)) throw new Error('Nombre de branch inválido');
-  const cmd = `cd /workspace && git checkout -b ${shellQuote(branch)}`;
+  const cmd = `git checkout -b ${shellQuote(branch)}`;
+  logAgentWorkerCall('git_create_branch', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd);
   return ok(call, `git checkout -b ${branch}: exit ${result.exitCode ?? 0}.`, {
     branch, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
@@ -464,7 +489,8 @@ async function gitCheckout(call: AgentToolCall, ctx: AgentExecutionContext) {
   const target = String(call.args.target || '').trim();
   if (!target) throw new Error('target (branch/commit) es requerido');
   if (!/^[A-Za-z0-9_./-]+$/.test(target)) throw new Error('target inválido');
-  const cmd = `cd /workspace && git checkout ${shellQuote(target)}`;
+  const cmd = `git checkout ${shellQuote(target)}`;
+  logAgentWorkerCall('git_checkout', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd);
   return ok(call, `git checkout ${target}: exit ${result.exitCode ?? 0}.`, {
     target, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
@@ -479,7 +505,8 @@ async function gitRevertCommit(call: AgentToolCall, ctx: AgentExecutionContext) 
   if (!confirmed) {
     return confirm(call, `¿Revertir el commit ${sha} (creará un nuevo commit que deshace ese)?`, { sha });
   }
-  const cmd = `cd /workspace && git revert --no-edit ${shellQuote(sha)}`;
+  const cmd = `git revert --no-edit ${shellQuote(sha)}`;
+  logAgentWorkerCall('git_revert_commit', cmd);
   const result = await runControlledWorkerCommand(ctx, cmd);
   return ok(call, `git revert ${sha}: exit ${result.exitCode ?? 0}.`, {
     sha, output: result.stdout, stderr: result.stderr, exitCode: result.exitCode
@@ -487,11 +514,15 @@ async function gitRevertCommit(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function readWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
-  const path = String(call.args.path || '').trim();
+  const path = validateWorkspaceRelPath(call.args.path);
   const maxBytes = typeof call.args.maxBytes === 'number' ? Math.min(Math.max(call.args.maxBytes, 256), 200_000) : 50_000;
-  if (!path) throw new Error('path es requerido');
-  if (path.includes('..')) throw new Error('path traversal no permitido');
-  const cmd = `cd /workspace && head -c ${maxBytes} ${shellQuote(path)}`;
+  // Importante: `head -c N <file>` corre con cwd resuelto por el worker a /workspace
+  // (resolveAgentCwd). Antes usábamos `cd /workspace && ...` pero `cd` no está en
+  // la whitelist de agent-command-policy → todas las llamadas fallaban con
+  // `binary "cd" no está en la whitelist`. El worker ya nos posiciona en /workspace
+  // por defecto cuando cwd === '.'.
+  const cmd = buildReadCommand(path, maxBytes);
+  logAgentWorkerCall('read_worker_file', `${path} (maxBytes=${maxBytes})`);
   const result = await runControlledWorkerCommand(ctx, cmd, '.', 8000, maxBytes + 200);
   if (result.exitCode !== 0) {
     return ok(call, `No se pudo leer ${path}: ${result.stderr.slice(0, 200)}`, {
@@ -504,20 +535,22 @@ async function readWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function writeWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
-  const path = String(call.args.path || '').trim();
+  const path = validateWorkspaceRelPath(call.args.path);
   const content = String(call.args.content ?? '');
   const confirmed = call.args.confirmed === true;
-  if (!path) throw new Error('path es requerido');
-  if (path.includes('..')) throw new Error('path traversal no permitido');
   if (content.length > 200_000) throw new Error('content > 200KB no permitido');
   if (!confirmed) {
     return confirm(call, `¿Escribir ${content.length} bytes a /workspace/${path}? (sobrescribe si existe)`, {
       path, bytes: content.length, preview: content.slice(0, 200)
     });
   }
-  const dirname = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
   const b64 = Buffer.from(content, 'utf8').toString('base64');
-  const cmd = `cd /workspace && ${dirname ? `mkdir -p ${shellQuote(dirname)} && ` : ''}echo ${shellQuote(b64)} | base64 -d > ${shellQuote(path)}`;
+  // Idem read_worker_file: sin `cd /workspace &&`. El pipeline corre con
+  // cwd = /workspace via resolveAgentCwd, así que el redirect `> path` (path
+  // relativo) escribe dentro de /workspace. agent-command-policy bloquea
+  // redirects a rutas absolutas fuera de /workspace y /tmp/agora-tmp.
+  const cmd = buildWriteCommand(path, b64);
+  logAgentWorkerCall('write_worker_file', `${path} (${content.length} bytes)`);
   const result = await runControlledWorkerCommand(ctx, cmd, '.', 12000);
   if (result.exitCode !== 0) {
     return ok(call, `Falló al escribir ${path}: ${result.stderr.slice(0, 200)}`, {
@@ -530,11 +563,10 @@ async function writeWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function tailWorkerLogs(call: AgentToolCall, ctx: AgentExecutionContext) {
-  const file = String(call.args.path || '').trim();
+  const file = validateWorkspaceRelPath(call.args.path);
   const lines = typeof call.args.lines === 'number' ? Math.min(Math.max(call.args.lines, 1), 500) : 100;
-  if (!file) throw new Error('path es requerido (archivo de log)');
-  if (file.includes('..')) throw new Error('path traversal no permitido');
-  const cmd = `cd /workspace && tail -n ${lines} ${shellQuote(file)}`;
+  const cmd = `tail -n ${lines} ${shellQuote(file)}`;
+  logAgentWorkerCall('tail_worker_logs', `${file} (lines=${lines})`);
   const result = await runControlledWorkerCommand(ctx, cmd);
   return ok(call, `Últimas ${lines} líneas de ${file} (exit ${result.exitCode ?? 0}).`, {
     path: file, lines, output: result.stdout, exitCode: result.exitCode
