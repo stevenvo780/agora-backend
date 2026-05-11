@@ -194,9 +194,10 @@ export interface AgentDiagnosticEventDetail {
 
 export type AgentStreamEvent =
   | { type: 'connected' }
+  | { type: 'chat-created'; chatId: string }
   | { type: 'status'; status: string }
   | { type: 'step'; step: AgentTraceStep }
-  | { type: 'complete'; reply: string; agentRun: AgentRun }
+  | { type: 'complete'; reply: string; agentRun: AgentRun; chatId?: string }
   | { type: 'error'; error: string };
 
 export interface ToolJsonSchema {
@@ -221,6 +222,9 @@ export interface AgentRequestBody {
   mode?: AgentMode;
   accessPolicy?: Partial<AgentAccessPolicy>;
   userInstructions?: string;
+  /** Si viene, los mensajes user/assistant se persisten en este chat. Si no,
+   * el stream crea uno y lo emite con `chat-created`. */
+  chatId?: string;
 }
 
 export interface AgentResponseBody {

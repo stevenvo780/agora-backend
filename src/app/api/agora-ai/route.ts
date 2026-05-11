@@ -5,7 +5,9 @@
  * Supports: OpenAI (ChatGPT), Anthropic (Claude), Google Gemini, DeepSeek.
  * Ollama keeps a direct browser flow because it is commonly deployed locally.
  *
- * API keys are sent from the client (stored in localStorage) and never persisted server-side.
+ * API keys: el cliente puede mandar `apiKey` o `X-Agent-Key` (compat con
+ * el flujo legacy de localStorage). Si no, leemos la key cifrada del
+ * vault server-side y la desciframos en memoria sólo para esta request.
  */
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/server-auth';
@@ -15,6 +17,11 @@ import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import type { AgentMode, AgentRequestBody, AIProvider } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
+import {
+  AGENT_PROVIDER_VALUES,
+  readDecryptedAgentSecret,
+  type AgentSecretProvider
+} from '@/lib/agora-ai/agentSecretsStore';
 
 export const maxDuration = 60;
 
@@ -31,12 +38,14 @@ export async function POST(request: NextRequest) {
       messages,
       workspaceId = PERSONAL_WORKSPACE_ID,
       provider,
-      apiKey = '',
+      apiKey: rawApiKey = '',
       model = '',
       mode = 'agent',
       accessPolicy: rawAccessPolicy,
       userInstructions: rawUserInstructions
     } = body;
+    const headerApiKey = request.headers.get('x-agent-key') ?? '';
+    let apiKey = (headerApiKey || rawApiKey || '').trim();
     const userInstructions = typeof rawUserInstructions === 'string'
       ? rawUserInstructions.slice(0, 4000)
       : '';
@@ -68,8 +77,12 @@ export async function POST(request: NextRequest) {
       deepseek: 'deepseek-v4-flash'
     };
 
+    if (!apiKey && (AGENT_PROVIDER_VALUES as readonly string[]).includes(provider)) {
+      const stored = await readDecryptedAgentSecret(auth.uid, provider as AgentSecretProvider);
+      if (stored) apiKey = stored;
+    }
     if (!apiKey) {
-      return NextResponse.json({ error: `API key requerida para ${provider}` }, { status: 400 });
+      return NextResponse.json({ error: `No hay key configurada para ${provider}` }, { status: 412 });
     }
 
     const claim = claimAgoraAgentRequest(`${auth.uid}:${workspaceId}:${provider}`, {

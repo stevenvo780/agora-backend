@@ -7,6 +7,18 @@ import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import { getAgentHooksCached } from '@/lib/agora-ai/agent-hooks-cache';
 import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
+import {
+  appendChatMessage,
+  createAgentChat,
+  deriveChatTitleFromContent,
+  getAgentChat,
+  patchAgentChat
+} from '@/lib/agora-ai/chatPersistence';
+import {
+  readDecryptedAgentSecret,
+  AGENT_PROVIDER_VALUES,
+  type AgentSecretProvider
+} from '@/lib/agora-ai/agentSecretsStore';
 
 export const runtime = 'nodejs';
 // Cloud Run admite hasta 3600s (configurado en el servicio). Dejamos 100s
@@ -42,13 +54,16 @@ export async function POST(request: NextRequest) {
     messages,
     workspaceId = PERSONAL_WORKSPACE_ID,
     provider,
-    apiKey = '',
+    apiKey: rawApiKey = '',
     model = '',
     mode = 'agent',
     accessPolicy: rawAccessPolicy,
-    userInstructions: rawUserInstructions
+    userInstructions: rawUserInstructions,
+    chatId: rawChatId
   } = body;
   const dryRun = (body as unknown as { dryRun?: boolean }).dryRun === true;
+  const headerApiKey = request.headers.get('x-agent-key') ?? '';
+  let apiKey = (headerApiKey || rawApiKey || '').trim();
   const userInstructions = typeof rawUserInstructions === 'string'
     ? rawUserInstructions.slice(0, 4000)
     : '';
@@ -65,8 +80,15 @@ export async function POST(request: NextRequest) {
   if (provider === 'ollama') {
     return new Response('Ollama se conecta directamente desde el navegador', { status: 400 });
   }
+
+  // Si el cliente no manda key explícita, intentamos descifrar la guardada
+  // server-side para este provider. Nunca persistimos el plaintext.
+  if (!apiKey && (AGENT_PROVIDER_VALUES as readonly string[]).includes(provider)) {
+    const stored = await readDecryptedAgentSecret(auth.uid, provider as AgentSecretProvider);
+    if (stored) apiKey = stored;
+  }
   if (!apiKey) {
-    return new Response(`API key requerida para ${provider}`, { status: 400 });
+    return new Response(`No hay key configurada para ${provider}`, { status: 412 });
   }
 
   if (workspaceId && !isPersonalWorkspaceId(workspaceId)) {
@@ -75,6 +97,31 @@ export async function POST(request: NextRequest) {
       return new Response('No tienes acceso a este workspace', { status: 403 });
     }
   }
+
+  // Resolver/crear el chat antes de abrir el stream — el primer evento
+  // que ve el cliente cuando es chat nuevo es `chat-created` con el id.
+  let activeChatId: string | null = null;
+  let isNewChat = false;
+  if (typeof rawChatId === 'string' && rawChatId.trim()) {
+    const existing = await getAgentChat(auth.uid, rawChatId.trim());
+    if (existing) {
+      activeChatId = existing.id;
+    }
+  }
+  if (!activeChatId) {
+    try {
+      const created = await createAgentChat(auth.uid, {
+        model: model || undefined,
+        provider: provider as AgentSecretProvider
+      });
+      activeChatId = created.id;
+      isNewChat = true;
+    } catch (error) {
+      console.warn('[agora-ai/stream] no se pudo crear chat persistido:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
 
   const claim = claimAgoraAgentRequest(`${auth.uid}:${workspaceId}:${provider}:stream`, {
     minIntervalMs: 900,
@@ -128,7 +175,8 @@ export async function POST(request: NextRequest) {
             steps: [],
             finalReply: '',
             truncated: true
-          }
+          },
+          ...(activeChatId ? { chatId: activeChatId } : {})
         });
         close();
       }, SOFT_BUDGET_MS);
@@ -136,6 +184,22 @@ export async function POST(request: NextRequest) {
       void (async () => {
         try {
           send({ type: 'connected' });
+          if (activeChatId) {
+            send({ type: 'chat-created', chatId: activeChatId });
+            if (isNewChat && lastUserMessage?.content?.trim()) {
+              patchAgentChat(auth.uid, activeChatId, deriveChatTitleFromContent(lastUserMessage.content)).catch((error) => {
+                console.warn('[agora-ai/stream] no se pudo titular chat:', error instanceof Error ? error.message : error);
+              });
+            }
+            if (lastUserMessage?.content?.trim()) {
+              appendChatMessage(auth.uid, activeChatId, {
+                role: 'user',
+                content: lastUserMessage.content
+              }).catch((error) => {
+                console.warn('[agora-ai/stream] no se pudo persistir mensaje user:', error instanceof Error ? error.message : error);
+              });
+            }
+          }
           send({ type: 'status', status: 'Preparando contexto del workspace…' });
 
           const contextPrompt = workspaceId && accessPolicy.capabilities.workspaceContext
@@ -170,7 +234,27 @@ export async function POST(request: NextRequest) {
           });
 
           clearTimeout(softTimeout);
-          send({ type: 'complete', reply: agentRun.finalReply, agentRun });
+          if (activeChatId && agentRun.finalReply) {
+            const toolCalls: unknown[] = [];
+            const toolResults: unknown[] = [];
+            for (const step of agentRun.steps) {
+              if (step.type === 'tool_call' && step.call) toolCalls.push(step.call);
+              if (step.type === 'tool_result' && step.result) toolResults.push(step.result);
+            }
+            const tokens = agentRun.usage?.totalTokens && agentRun.usage.totalTokens > 0
+              ? agentRun.usage.totalTokens
+              : 0;
+            appendChatMessage(auth.uid, activeChatId, {
+              role: 'assistant',
+              content: agentRun.finalReply,
+              ...(toolCalls.length ? { toolCalls } : {}),
+              ...(toolResults.length ? { toolResults } : {}),
+              ...(tokens ? { tokens } : {})
+            }).catch((error) => {
+              console.warn('[agora-ai/stream] no se pudo persistir mensaje assistant:', error instanceof Error ? error.message : error);
+            });
+          }
+          send({ type: 'complete', reply: agentRun.finalReply, agentRun, ...(activeChatId ? { chatId: activeChatId } : {}) });
           close();
         } catch (error) {
           clearTimeout(softTimeout);
