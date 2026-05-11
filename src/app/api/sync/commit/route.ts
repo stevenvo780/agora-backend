@@ -56,28 +56,50 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Object not present in NAS bucket' }, { status: 412 });
     }
 
-    const currentVersion = typeof data.version === 'number' ? data.version : 0;
-    if (typeof baseVersion === 'number' && baseVersion < currentVersion) {
+    type CommitConflict = { kind: 'conflict'; currentVersion: number; currentHash: string | null };
+    type CommitSuccess = { kind: 'ok'; newVersion: number; baseVersion: number };
+    let txResult: CommitConflict | CommitSuccess;
+    try {
+      txResult = await adminDb.runTransaction<CommitConflict | CommitSuccess>(async (tx) => {
+        const inTxSnap = await tx.get(ref);
+        if (!inTxSnap.exists) {
+          throw new Error('Not found');
+        }
+        const inTxData = inTxSnap.data() as DocData;
+        const currentVersion = typeof inTxData.version === 'number' ? inTxData.version : 0;
+        if (typeof baseVersion === 'number' && baseVersion < currentVersion) {
+          return { kind: 'conflict', currentVersion, currentHash: inTxData.contentHash ?? null };
+        }
+        const newVersion = currentVersion + 1;
+        const update: Record<string, unknown> = {
+          contentHash,
+          version: newVersion,
+          baseVersion: currentVersion,
+          syncState: 'synced',
+          lastWriter: auth.uid,
+          storageBackend: 'minio',
+          updatedAt: FieldValue.serverTimestamp()
+        };
+        if (typeof size === 'number') update.size = size;
+        tx.update(ref, update);
+        return { kind: 'ok', newVersion, baseVersion: currentVersion };
+      });
+    } catch (txError) {
+      if (txError instanceof Error && txError.message === 'Not found') {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      }
+      throw txError;
+    }
+
+    if (txResult.kind === 'conflict') {
       return NextResponse.json({
         error: 'conflict',
-        currentVersion,
-        currentHash: data.contentHash ?? null
+        currentVersion: txResult.currentVersion,
+        currentHash: txResult.currentHash
       }, { status: 409 });
     }
 
-    const newVersion = currentVersion + 1;
-    const update: Record<string, unknown> = {
-      contentHash,
-      version: newVersion,
-      baseVersion: currentVersion,
-      syncState: 'synced',
-      lastWriter: auth.uid,
-      storageBackend: 'minio',
-      updatedAt: FieldValue.serverTimestamp()
-    };
-    if (typeof size === 'number') update.size = size;
-    await ref.update(update);
-
+    const newVersion = txResult.newVersion;
     const ping = await emitPing({
       scope: 'document',
       workspaceId: wsId ?? null,

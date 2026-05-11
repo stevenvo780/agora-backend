@@ -3,7 +3,7 @@ import {
   ok, confirm, clamp, truncateText,
   fetchWorkerStatus, fetchNexusJson, fetchAppJson, fetchAppSseEvents,
   resolveWorkerWorkspaceId, loadWorkspaceDocuments,
-  getErrorMessage, DocumentType, MAX_DOC_SCAN
+  getErrorMessage, DocumentType, DEFAULT_PAGE_SIZE
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -358,7 +358,7 @@ async function gitCommitWorkspace(call: AgentToolCall, ctx: AgentExecutionContex
 
 async function syncStatus(call: AgentToolCall, ctx: AgentExecutionContext) {
   const [documents, worker, git] = await Promise.all([
-    loadWorkspaceDocuments(ctx, MAX_DOC_SCAN),
+    loadWorkspaceDocuments(ctx, DEFAULT_PAGE_SIZE),
     fetchWorkerStatus(ctx, 5000),
     fetchGitStatus(ctx).catch((error) => ({ error: getErrorMessage(error) }))
   ]);

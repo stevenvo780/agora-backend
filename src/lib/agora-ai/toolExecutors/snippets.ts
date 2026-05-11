@@ -2,7 +2,7 @@ import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm, clamp, excerpt,
   ensureWorkspaceAccess, listWorkspaceSnippets, fetchSnippetForUser, loadWorkspaceDocuments,
-  adminDb, FieldValue, isPersonalWorkspaceId, MAX_DOC_SCAN
+  adminDb, FieldValue, isPersonalWorkspaceId, DEFAULT_PAGE_SIZE
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -193,7 +193,7 @@ async function removeWordFromDictionary(call: AgentToolCall, ctx: AgentExecution
 
 async function findUnusedSnippets(call: AgentToolCall, ctx: AgentExecutionContext) {
   const snippets = await listWorkspaceSnippets(ctx);
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const docs = await loadWorkspaceDocuments(ctx, DEFAULT_PAGE_SIZE);
   const allDocsContent = docs.map(d => (d.content || '').toLowerCase()).join('\n');
   const unused = snippets
     .filter(s => {

@@ -14,6 +14,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import { adminDb } from '@/lib/firebase-admin';
+import { Timestamp } from 'firebase-admin/firestore';
 import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
 import { isWorkerAuthConfigured, verifyWorkerAuth } from '@/lib/worker-auth';
 import { presignGet, isNasConfigured } from '@/lib/nas-storage';
@@ -22,6 +23,39 @@ import { getErrorMessage } from '@/lib/error-utils';
 import { parseDocumentRecord } from '@agora/contracts';
 
 const SIGNED_TTL = 30 * 60; // 30 min — alcanza para descargar muchos blobs.
+/**
+ * Tamaño de página default si el daemon no especifica `?limit=`. NO es un
+ * cap del total — el daemon itera `?cursor=<nextCursor>` hasta agotar
+ * `hasMore=true`. Workspaces de 100k docs son válidos.
+ */
+const DEFAULT_PAGE_SIZE = 2000;
+/**
+ * Tamaño máximo de UNA página, no del total. Más allá de esto Firestore
+ * tiende a timeout o latencia inaceptable por query individual.
+ */
+const MAX_PAGE_SIZE = 10_000;
+
+interface WorkerListCursor {
+  updatedAtMs: number;
+  id: string;
+}
+
+const encodeWorkerListCursor = (cursor: WorkerListCursor): string =>
+  Buffer.from(JSON.stringify({ u: cursor.updatedAtMs, i: cursor.id }), 'utf8').toString('base64url');
+
+const decodeWorkerListCursor = (raw: string | null): WorkerListCursor | null => {
+  if (!raw) return null;
+  try {
+    const buf = Buffer.from(raw, 'base64url');
+    if (buf.byteLength === 0) return null;
+    const parsed = JSON.parse(buf.toString('utf8')) as { u?: unknown; i?: unknown };
+    if (typeof parsed.u !== 'number' || !Number.isFinite(parsed.u)) return null;
+    if (typeof parsed.i !== 'string' || parsed.i.length === 0) return null;
+    return { updatedAtMs: parsed.u, id: parsed.i };
+  } catch {
+    return null;
+  }
+};
 
 export async function GET(req: NextRequest) {
     try {
@@ -34,6 +68,10 @@ export async function GET(req: NextRequest) {
         const since = Number.parseInt(searchParams.get('since') ?? '0', 10) || 0;
         const presignParam = (searchParams.get('presign') ?? 'true').toLowerCase();
         const includePresign = presignParam !== 'false' && presignParam !== '0';
+        const limitParam = Number.parseInt(searchParams.get('limit') ?? '', 10);
+        const limit = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.isFinite(limitParam) && limitParam > 0 ? limitParam : DEFAULT_PAGE_SIZE));
+        const cursorParam = searchParams.get('cursor');
+        const cursor = decodeWorkerListCursor(cursorParam);
 
         // Si el header WORKER_TOKEN difiere del query workspaceId, rechazar
         // (un worker sólo puede ver su propio workspace).
@@ -51,10 +89,13 @@ export async function GET(req: NextRequest) {
             q = q.where('workspaceId', '==', wsParam);
         }
 
-        const snap = await q
-            .select('name', 'folder', 'type', 'storagePath', 'contentHash', 'size', 'version', 'updatedAt', 'ownerId')
-            .limit(2000)
-            .get();
+        q = q.select('name', 'folder', 'type', 'storagePath', 'contentHash', 'size', 'version', 'updatedAt', 'ownerId')
+            .orderBy('updatedAt', 'asc')
+            .orderBy('__name__', 'asc');
+        if (cursor) {
+            q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+        }
+        const snap = await q.limit(limit).get();
 
         type WorkerListItem = {
             docId: string;
@@ -108,12 +149,31 @@ export async function GET(req: NextRequest) {
             )
         ).filter((item): item is WorkerListItem => item !== null);
 
+        let nextCursor: string | null = null;
+        if (snap.size >= limit && snap.docs.length > 0) {
+            const last = snap.docs[snap.docs.length - 1];
+            if (last) {
+                const parsedLast = parseDocumentRecord(last.id, last.data());
+                if (parsedLast.ok && parsedLast.value.updatedAtMs !== null) {
+                    nextCursor = encodeWorkerListCursor({
+                        updatedAtMs: parsedLast.value.updatedAtMs,
+                        id: last.id
+                    });
+                }
+            }
+        }
+
+        const headers = new Headers();
+        if (nextCursor) headers.set('X-Next-Cursor', nextCursor);
+
         return NextResponse.json({
             workspaceId: wsParam,
             count: items.length,
             ts: Date.now(),
-            items
-        });
+            items,
+            nextCursor,
+            limit
+        }, { headers });
     } catch (e) {
         console.error('[sync/worker-list] error:', getErrorMessage(e));
         return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });

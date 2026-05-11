@@ -1,6 +1,12 @@
 import { adminDb } from '@/lib/firebase-admin';
 
-const AGENT_DOC_LIMIT = 200;
+/**
+ * Tamaño de la PRIMERA página que se inyecta como contexto inicial al
+ * agente cuando arranca conversación. NO es un cap del total accesible —
+ * el agente puede pedir más documentos vía tool calls (list_documents,
+ * search_documents, etc.) que aceptan cursor para paginar.
+ */
+const AGENT_CONTEXT_FIRST_PAGE = 200;
 const CONTEXT_TTL_MS = 60_000;
 
 type CachedContext = { value: string; expiresAt: number };
@@ -19,7 +25,7 @@ const isFirestoreIndexError = (error: unknown): boolean => {
 const fetchDocsSnapshot = async (workspaceId: string): Promise<FirebaseFirestore.QuerySnapshot | null> => {
   const base = adminDb.collection('documents').where('workspaceId', '==', workspaceId);
   try {
-    return await base.orderBy('updatedAt', 'desc').limit(AGENT_DOC_LIMIT).get();
+    return await base.orderBy('updatedAt', 'desc').limit(AGENT_CONTEXT_FIRST_PAGE).get();
   } catch (err) {
     if (isFirestoreIndexError(err)) {
       console.error(
@@ -31,7 +37,7 @@ const fetchDocsSnapshot = async (workspaceId: string): Promise<FirebaseFirestore
         '    --field-config=field-path=updatedAt,order=descending'
       );
       try {
-        return await base.limit(AGENT_DOC_LIMIT).get();
+        return await base.limit(AGENT_CONTEXT_FIRST_PAGE).get();
       } catch {
         return null;
       }
@@ -78,7 +84,7 @@ export async function buildAgoraWorkspaceContext(workspaceId: string): Promise<s
       }
 
       if (textDocs.length > 0) {
-        parts.push(`## Documentos disponibles en el workspace (${textDocs.length}${docsSnap.size === AGENT_DOC_LIMIT ? `, mostrando los ${AGENT_DOC_LIMIT} más recientes` : ''})`);
+        parts.push(`## Documentos disponibles en el workspace (${textDocs.length}${docsSnap.size === AGENT_CONTEXT_FIRST_PAGE ? `, primera página de ${AGENT_CONTEXT_FIRST_PAGE} — usa list_documents con cursor para paginar el resto` : ''})`);
         parts.push('(Usa `read_document` para leer el contenido. Filtra por carpeta o nombre antes.)\n');
         for (const doc of textDocs) {
           const folder = doc.folder ? ` [carpeta: ${String(doc.folder)}]` : '';

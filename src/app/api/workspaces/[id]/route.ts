@@ -146,9 +146,16 @@ const resolveFolderRecordPath = (doc: StoredDocumentRecord) => {
   return parentPath === DEFAULT_FOLDER_NAME ? name : `${parentPath}/${name}`;
 };
 
+const buildTargetDocIndexKey = (doc: StoredDocumentRecord): string => {
+  const folder = normalizeFolderPath(typeof doc.folder === 'string' ? doc.folder : undefined);
+  const type = typeof doc.type === 'string' ? doc.type : DocumentType.Text;
+  const name = String(doc.name || '').trim().toLowerCase();
+  return `${folder}\x00${type}\x00${name}`;
+};
+
 const resolveMergedDocName = (params: {
   doc: StoredDocumentRecord;
-  targetDocs: StoredDocumentRecord[];
+  targetIndex: Set<string>;
 }) => {
   const baseName = typeof params.doc.name === 'string' && params.doc.name.trim()
     ? params.doc.name.trim()
@@ -156,11 +163,8 @@ const resolveMergedDocName = (params: {
   const folder = normalizeFolderPath(typeof params.doc.folder === 'string' ? params.doc.folder : undefined);
   const type = typeof params.doc.type === 'string' ? params.doc.type : DocumentType.Text;
 
-  const matches = (name: string) => params.targetDocs.some(existing => (
-    normalizeFolderPath(typeof existing.folder === 'string' ? existing.folder : undefined) === folder
-    && (typeof existing.type === 'string' ? existing.type : DocumentType.Text) === type
-    && String(existing.name || '').trim().toLowerCase() === name.trim().toLowerCase()
-  ));
+  const matches = (name: string) =>
+    params.targetIndex.has(`${folder}\x00${type}\x00${name.trim().toLowerCase()}`);
 
   if (!matches(baseName)) return baseName;
 
@@ -303,6 +307,13 @@ const cloneWorkspaceDocuments = async (params: {
   ]);
 
   const targetDocs = targetDocsLoaded.slice();
+  const targetDocIndex = new Set<string>(targetDocs.map(buildTargetDocIndexKey));
+  const targetFolderPathSet = new Set<string>();
+  for (const existing of targetDocs) {
+    if ((typeof existing.type === 'string' ? existing.type : DocumentType.Text) === DocumentType.Folder) {
+      targetFolderPathSet.add(resolveFolderRecordPath(existing));
+    }
+  }
   let created = 0;
   let skippedFolders = 0;
   let clonedFiles = 0;
@@ -334,18 +345,14 @@ const cloneWorkspaceDocuments = async (params: {
 
     if (params.mergeIntoExisting && sourceType === DocumentType.Folder) {
       const sourcePath = resolveFolderRecordPath(sourceDoc);
-      const existingFolderDoc = targetDocs.find(existing => (
-        (typeof existing.type === 'string' ? existing.type : DocumentType.Text) === DocumentType.Folder
-        && resolveFolderRecordPath(existing) === sourcePath
-      ));
-      if (existingFolderDoc) {
+      if (targetFolderPathSet.has(sourcePath)) {
         skippedFolders += 1;
         continue;
       }
     }
 
     if (params.mergeIntoExisting && sourceType !== DocumentType.Folder) {
-      targetName = resolveMergedDocName({ doc: sourceDoc, targetDocs });
+      targetName = resolveMergedDocName({ doc: sourceDoc, targetIndex: targetDocIndex });
     }
 
     plans.push({ sourceDoc, targetName, folder, sourceType });
@@ -419,7 +426,12 @@ const cloneWorkspaceDocuments = async (params: {
 
     const newRef = collection.doc();
     bulkWriter.set(newRef, cloneData).catch(() => undefined);
-    targetDocs.push({ id: newRef.id, ...cloneData });
+    const stored: StoredWorkspaceDocument = { id: newRef.id, ...cloneData };
+    targetDocs.push(stored);
+    targetDocIndex.add(buildTargetDocIndexKey(stored));
+    if (sourceType === DocumentType.Folder) {
+      targetFolderPathSet.add(resolveFolderRecordPath(stored));
+    }
     created += 1;
   }
 

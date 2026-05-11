@@ -8,11 +8,48 @@ import { DocumentType, isDocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { getObjectBuffer, isNasConfigured } from '@/lib/nas-storage';
 
-// 2000 cubre el WS más grande conocido (Filosofia ~1619 docs). Si crece más,
-// subir o agregar paginación real con cursor. orderBy(updatedAt desc) asegura
-// que si el cap se queda corto, los docs visibles son los más recientes.
-const MAX_SCAN_DOCS = 2000;
+/**
+ * Tamaño de página de scan Firestore. NO es un cap del total accesible —
+ * si el workspace tiene más documentos, el cliente itera `nextCursor` para
+ * paginar. orderBy(updatedAt desc) asegura que los docs más recientes salen
+ * primero en cada página.
+ */
+const DEFAULT_PAGE_SIZE = 2000;
+const MAX_PAGE_SIZE = 10_000;
 const DEFAULT_LIMIT = 18;
+
+interface SemanticScanCursor {
+  updatedAtMs: number;
+  id: string;
+}
+
+const encodeScanCursor = (cursor: SemanticScanCursor): string =>
+  Buffer.from(JSON.stringify({ u: cursor.updatedAtMs, i: cursor.id }), 'utf8').toString('base64url');
+
+const decodeScanCursor = (raw: string | null | undefined): SemanticScanCursor | null => {
+  if (!raw) return null;
+  try {
+    const buf = Buffer.from(raw, 'base64url');
+    if (buf.byteLength === 0) return null;
+    const parsed = JSON.parse(buf.toString('utf8')) as { u?: unknown; i?: unknown };
+    if (typeof parsed.u !== 'number' || !Number.isFinite(parsed.u)) return null;
+    if (typeof parsed.i !== 'string' || parsed.i.length === 0) return null;
+    return { updatedAtMs: parsed.u, id: parsed.i };
+  } catch {
+    return null;
+  }
+};
+
+const toMillis = (value: unknown): number | null => {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as { toMillis?: () => number; seconds?: number; _seconds?: number };
+  if (typeof obj.toMillis === 'function') {
+    try { return obj.toMillis(); } catch { return null; }
+  }
+  if (typeof obj.seconds === 'number') return obj.seconds * 1000;
+  if (typeof obj._seconds === 'number') return obj._seconds * 1000;
+  return null;
+};
 const NON_SEARCHABLE_DOCUMENT_TYPES = new Set([
   DocumentType.Folder,
   DocumentType.Terminal,
@@ -52,6 +89,13 @@ export async function POST(req: NextRequest) {
     const kinds = Array.isArray(body.kinds)
       ? body.kinds.filter((kind): kind is SearchResultKind => typeof kind === 'string' && isSearchResultKind(kind))
       : undefined;
+    const rawPageSize = typeof body.pageSize === 'number' && Number.isFinite(body.pageSize) && body.pageSize > 0
+      ? Math.floor(body.pageSize)
+      : DEFAULT_PAGE_SIZE;
+    const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, rawPageSize));
+    const cursor = typeof body.cursor === 'string' && body.cursor.length > 0
+      ? decodeScanCursor(body.cursor)
+      : null;
 
     let queryRef: FirebaseFirestore.Query = adminDb.collection('documents');
 
@@ -65,15 +109,19 @@ export async function POST(req: NextRequest) {
       queryRef = queryRef.where('ownerId', '==', auth.uid).where('workspaceId', '==', PERSONAL_WORKSPACE_ID);
     }
 
-    // orderBy(updatedAt desc) → si el cap se queda corto, los docs más
-    // recientes son visibles. Requiere composite index:
-    //   collection: documents
-    //   workspaceId ASC, updatedAt DESC   (para WS compartidos)
-    //   ownerId ASC, workspaceId ASC, updatedAt DESC   (para personal)
-    // Si Firestore lo pide, log con instrucciones para crearlo.
+    // orderBy(updatedAt desc) — los docs más recientes salen primero en cada
+    // página. Composite index requerido:
+    //   documents (workspaceId ASC, updatedAt DESC) para WS compartidos
+    //   documents (ownerId ASC, workspaceId ASC, updatedAt DESC) para personal
     let snapshot: FirebaseFirestore.QuerySnapshot;
+    let orderedByUpdatedAt = true;
     try {
-      snapshot = await queryRef.orderBy('updatedAt', 'desc').limit(MAX_SCAN_DOCS).get();
+      let q = queryRef.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+      if (cursor) {
+        const { Timestamp } = await import('firebase-admin/firestore');
+        q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+      }
+      snapshot = await q.limit(pageSize).get();
     } catch (err) {
       if (isFirestoreIndexError(err)) {
         const msg = getErrorMessage(err);
@@ -86,8 +134,8 @@ export async function POST(req: NextRequest) {
           'Deploy con: firebase deploy --only firestore:indexes --project udea-filosofia. ' +
           'Original error: ' + msg
         );
-        // Fallback sin orderBy para no devolver 500 al usuario.
-        snapshot = await queryRef.limit(MAX_SCAN_DOCS).get();
+        orderedByUpdatedAt = false;
+        snapshot = await queryRef.limit(pageSize).get();
       } else {
         throw err;
       }
@@ -97,6 +145,17 @@ export async function POST(req: NextRequest) {
       { id: doc.id, ...(doc.data() as Record<string, unknown>) } as Record<string, unknown> & { id: string }
     ));
     const filteredRaw = rawDocs.filter(item => !NON_SEARCHABLE_DOCUMENT_TYPES.has(item.type as DocumentType));
+
+    let nextScanCursor: string | null = null;
+    if (orderedByUpdatedAt && snapshot.size >= pageSize && snapshot.docs.length > 0) {
+      const last = snapshot.docs[snapshot.docs.length - 1];
+      if (last) {
+        const lastUpdatedAt = toMillis((last.data() as { updatedAt?: unknown }).updatedAt);
+        if (lastUpdatedAt !== null) {
+          nextScanCursor = encodeScanCursor({ updatedAtMs: lastUpdatedAt, id: last.id });
+        }
+      }
+    }
 
     // Estrategia de contenido:
     // 1) Si el doc tiene `searchableContent` populated → usar directo (cero IO).
@@ -180,7 +239,10 @@ export async function POST(req: NextRequest) {
         totalCandidates,
         offset: resultOffset,
         hasMore,
-        mode: 'heuristic-v1'
+        mode: 'heuristic-v1',
+        pageSize,
+        scanHasMore: nextScanCursor !== null,
+        nextCursor: nextScanCursor
       }
     });
   } catch (error: unknown) {

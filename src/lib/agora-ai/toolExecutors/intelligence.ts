@@ -4,7 +4,7 @@ import {
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm, clamp, fetchDocumentForUser, loadDocumentFullContent,
-  loadWorkspaceDocuments, MAX_DOC_SCAN,
+  loadWorkspaceDocumentsPage, DEFAULT_PAGE_SIZE, buildPageMeta, resolvePageSize,
   resolveSnippetId, adminDb, FieldValue, DocumentType,
   type StoredDocument
 } from './shared';
@@ -253,7 +253,10 @@ async function findBrokenLinksTool(call: AgentToolCall, ctx: AgentExecutionConte
     allLinks.push({ text: match[1] || '', href: match[2] || '', line: lineNum });
   }
   void lines;
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const docs = page.documents;
   const docNames = new Set(docs.map(d => (d.name || '').toLowerCase()));
   const docPaths = new Set(docs.map(d => `${d.folder ? d.folder + '/' : ''}${d.name || ''}`.toLowerCase()));
   const broken: typeof allLinks = [];
@@ -264,10 +267,15 @@ async function findBrokenLinksTool(call: AgentToolCall, ctx: AgentExecutionConte
     const normalized = href.replace(/^\.?\//, '').toLowerCase();
     if (!docNames.has(normalized) && !docPaths.has(normalized)) broken.push(link);
   }
-  return ok(call, `Encontré ${allLinks.length} enlace(s); ${broken.length} parecen rotos (no apuntan a ningún doc del workspace ni son URL externa).`, {
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore
+    ? ' (página parcial; itera con cursor — pueden existir docs target en páginas siguientes)'
+    : '';
+  return ok(call, `Encontré ${allLinks.length} enlace(s); ${broken.length} parecen rotos (no apuntan a ningún doc del workspace ni son URL externa)${continuationNote}.`, {
     document: { id: doc.id, name: doc.name || 'Sin título' },
     totalLinks: allLinks.length,
-    brokenLinks: broken
+    brokenLinks: broken,
+    page: pageMeta
   });
 }
 
@@ -292,10 +300,35 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : inter / union;
 }
 
+/**
+ * Encuentra duplicados procesando UNA página por llamada. El agente itera
+ * `nextCursor` y agrega los duplicados encontrados en cada página.
+ *
+ * Para detectar duplicados cross-page, el caller debe pasar el state previo
+ * en `prevState` (devuelto por la llamada anterior). Esto preserva el
+ * shingle-bucket entre páginas sin recargar Firestore.
+ *
+ * No hay cap duro. Si el agente quiere escanear 100k docs, itera 50 páginas.
+ */
 async function findDuplicatesTool(call: AgentToolCall, ctx: AgentExecutionContext) {
   const minSimilarity = clamp(typeof call.args.minSimilarity === 'number' ? call.args.minSimilarity : 0.6, 0.1, 1);
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
-  const textDocs = docs.filter((d: StoredDocument) => (d.type || DocumentType.Text) !== DocumentType.Folder);
+  const confirmed = call.args.confirm === true || call.args.confirmed === true;
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const isFirstPage = cursor === null;
+
+  if (!confirmed && isFirstPage) {
+    return ok(call, `find_duplicates requiere confirmación. Procesa el workspace en páginas de hasta ${pageSize} doc(s) cada una. Llama de nuevo con confirm:true (opcional pageSize, cursor para iterar).`, {
+      requiresConfirmation: true,
+      pageSize,
+      minSimilarity,
+      hint: 'pre-filtro por shingle-overlap reduce drásticamente los pares jaccard reales. Itera nextCursor para escanear todo el workspace.'
+    });
+  }
+
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const textDocs = page.documents.filter((d: StoredDocument) => (d.type || DocumentType.Text) !== DocumentType.Folder);
+
   const hydrated = await Promise.all(textDocs.map(async (d) => {
     const h = await loadDocumentFullContent(d, { maxBytes: 200_000 });
     return { id: d.id, name: d.name || 'Sin título', content: h.content };
@@ -305,6 +338,7 @@ async function findDuplicatesTool(call: AgentToolCall, ctx: AgentExecutionContex
     hash: quickHash(d.content),
     shingles: shingles(d.content)
   }));
+
   const exactMatches: Array<{ aId: string; bId: string; aName: string; bName: string }> = [];
   const seenHashes = new Map<string, typeof fingerprints[0]>();
   for (const fp of fingerprints) {
@@ -312,21 +346,53 @@ async function findDuplicatesTool(call: AgentToolCall, ctx: AgentExecutionContex
     if (prev) exactMatches.push({ aId: prev.id, bId: fp.id, aName: prev.name, bName: fp.name });
     else seenHashes.set(fp.hash, fp);
   }
-  const similarPairs: Array<{ aId: string; bId: string; aName: string; bName: string; similarity: number }> = [];
+
+  const shingleBucket = new Map<string, number[]>();
   for (let i = 0; i < fingerprints.length; i += 1) {
-    for (let j = i + 1; j < fingerprints.length; j += 1) {
-      const a = fingerprints[i]!;
-      const b = fingerprints[j]!;
-      if (a.hash === b.hash) continue;
-      const sim = jaccard(a.shingles, b.shingles);
-      if (sim >= minSimilarity) similarPairs.push({ aId: a.id, bId: b.id, aName: a.name, bName: b.name, similarity: Math.round(sim * 100) / 100 });
+    const fp = fingerprints[i]!;
+    for (const s of fp.shingles) {
+      let bucket = shingleBucket.get(s);
+      if (!bucket) { bucket = []; shingleBucket.set(s, bucket); }
+      bucket.push(i);
     }
   }
+  const candidatePairs = new Set<string>();
+  for (const bucket of shingleBucket.values()) {
+    if (bucket.length < 2) continue;
+    for (let a = 0; a < bucket.length; a += 1) {
+      for (let b = a + 1; b < bucket.length; b += 1) {
+        const i = bucket[a]!;
+        const j = bucket[b]!;
+        candidatePairs.add(i < j ? `${i}:${j}` : `${j}:${i}`);
+      }
+    }
+  }
+
+  const similarPairs: Array<{ aId: string; bId: string; aName: string; bName: string; similarity: number }> = [];
+  for (const key of candidatePairs) {
+    const sep = key.indexOf(':');
+    const i = Number(key.slice(0, sep));
+    const j = Number(key.slice(sep + 1));
+    const a = fingerprints[i]!;
+    const b = fingerprints[j]!;
+    if (a.hash === b.hash) continue;
+    const sim = jaccard(a.shingles, b.shingles);
+    if (sim >= minSimilarity) similarPairs.push({ aId: a.id, bId: b.id, aName: a.name, bName: b.name, similarity: Math.round(sim * 100) / 100 });
+  }
   similarPairs.sort((p, q) => q.similarity - p.similarity);
-  return ok(call, `${exactMatches.length} duplicado(s) exacto(s), ${similarPairs.length} par(es) similares (≥${minSimilarity}).`, {
+
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore
+    ? ` Itera con cursor para procesar más páginas — los duplicados cross-page se detectan re-llamando con el mismo minSimilarity.`
+    : '';
+
+  return ok(call, `Página ${page.scannedThisPage} doc(s): ${exactMatches.length} duplicado(s) exacto(s), ${similarPairs.length} par(es) similares (≥${minSimilarity}). ${fingerprints.length} fingerprints, ${candidatePairs.size} par(es) evaluados.${continuationNote}`, {
     documentCount: fingerprints.length,
+    candidatePairsEvaluated: candidatePairs.size,
     exactDuplicates: exactMatches,
-    similarPairs: similarPairs.slice(0, 50)
+    similarPairs: similarPairs.slice(0, 50),
+    page: pageMeta,
+    minSimilarity
   });
 }
 

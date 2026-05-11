@@ -49,6 +49,8 @@ export interface SemanticSearchRequest {
   limit?: number;
   offset?: number;
   kinds?: SearchResultKind[];
+  pageSize?: number;
+  cursor?: string | null;
 }
 
 export interface SemanticSearchResponse {

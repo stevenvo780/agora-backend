@@ -28,6 +28,7 @@ import { getErrorMessage } from '@/lib/error-utils';
 import { parseWorkerCommitPayload, splitRepoPath } from '@agora/contracts';
 import { computeSearchableContent } from '@/lib/search/searchable-content';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
+import { invalidateStorageUsageCache } from '@/lib/storage-usage';
 
 const TEXT_EXT = new Set([
     '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.toml', '.ini',
@@ -96,8 +97,7 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Buscar doc existente. Personal: por (ownerId, name, folder); Shared: por (workspaceId, name, folder).
-        const existingQuery = isPersonal
+        const existingQueryBuilder = (): FirebaseFirestore.Query => isPersonal
             ? adminDb.collection('documents')
                 .where('ownerId', '==', ctx.userId)
                 .where('workspaceId', '==', PERSONAL_WORKSPACE_ID)
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
                 .where('workspaceId', '==', ctx.workspaceId)
                 .where('name', '==', name)
                 .where('folder', '==', folder);
-        const existingSnap = await existingQuery.limit(1).get();
+        const preSnap = await existingQueryBuilder().limit(1).get();
 
         // Owner para cuota — en personal es el propio uid; en shared es ownerId del workspace.
         let wsOwner = ctx.userId ?? '';
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
         }
         if (size && size > 0) {
             // Para updates, descontar el size del doc existente (no double-count).
-            const oldSize = existingSnap.empty ? 0 : Number((existingSnap.docs[0].data() as { size?: number }).size ?? 0);
+            const oldSize = preSnap.empty ? 0 : Number((preSnap.docs[0]!.data() as { size?: number }).size ?? 0);
             const delta = Math.max(0, size - oldSize);
             const quotaResp = await enforceStorageQuota(wsOwner, delta);
             if (quotaResp) {
@@ -130,34 +130,34 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        let docId: string;
-        let version = 1;
-        let created = false;
-
-        if (!existingSnap.empty) {
-            const ref = existingSnap.docs[0].ref;
-            const cur = existingSnap.docs[0].data() as { version?: number };
-            const currentVersion = typeof cur.version === 'number' ? cur.version : 0;
-            version = currentVersion + 1;
-            const updatePayload: Record<string, unknown> = {
-                contentHash,
-                size: size ?? FieldValue.delete(),
-                version,
-                baseVersion: currentVersion,
-                syncState: 'synced',
-                lastWriter: `worker:${ctx.workspaceId}`,
-                storagePath,
-                storageBackend: 'minio',
-                mimeType: inferredMime,
-                content: FieldValue.delete(),
-                updatedAt: FieldValue.serverTimestamp()
-            };
-            if (isMarkdownLike) {
-                updatePayload.searchableContent = searchable !== null ? searchable : FieldValue.delete();
+        const txResult = await adminDb.runTransaction<{ docId: string; version: number; created: boolean }>(async (tx) => {
+            const inTxSnap = await tx.get(existingQueryBuilder().limit(1));
+            if (!inTxSnap.empty) {
+                const ref = inTxSnap.docs[0]!.ref;
+                const cur = inTxSnap.docs[0]!.data() as { version?: number };
+                const currentVersion = typeof cur.version === 'number' ? cur.version : 0;
+                const nextVersion = currentVersion + 1;
+                const updatePayload: Record<string, unknown> = {
+                    contentHash,
+                    size: size ?? FieldValue.delete(),
+                    version: nextVersion,
+                    baseVersion: currentVersion,
+                    syncState: 'synced',
+                    lastWriter: `worker:${ctx.workspaceId}`,
+                    storagePath,
+                    storageBackend: 'minio',
+                    mimeType: inferredMime,
+                    content: FieldValue.delete(),
+                    updatedAt: FieldValue.serverTimestamp()
+                };
+                if (isMarkdownLike) {
+                    updatePayload.searchableContent = searchable !== null ? searchable : FieldValue.delete();
+                }
+                tx.update(ref, updatePayload);
+                return { docId: ref.id, version: nextVersion, created: false };
             }
-            await ref.update(updatePayload);
-            docId = ref.id;
-        } else {
+
+            const ref = adminDb.collection('documents').doc();
             const docPayload: Record<string, unknown> = {
                 name,
                 folder,
@@ -177,12 +177,16 @@ export async function POST(req: NextRequest) {
                 updatedAt: FieldValue.serverTimestamp()
             };
             if (searchable !== null) docPayload.searchableContent = searchable;
-            const ref = await adminDb.collection('documents').add(docPayload);
-            docId = ref.id;
-            created = true;
-        }
+            tx.create(ref, docPayload);
+            return { docId: ref.id, version: 1, created: true };
+        });
+
+        const docId = txResult.docId;
+        const version = txResult.version;
+        const created = txResult.created;
 
         invalidateAgoraWorkspaceContext(ctx.workspaceId);
+        invalidateStorageUsageCache(wsOwner);
 
         await emitPing({
             scope: 'document',

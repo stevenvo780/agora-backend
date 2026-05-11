@@ -2,7 +2,7 @@
  * Shared types, utilities and base functions used by all tool executor modules.
  * Extracted from toolExecutor.ts to enable domain-level splitting.
  */
-import { FieldPath, FieldValue } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/firebase-admin';
 import { putObject, deleteObject, getObjectBuffer } from '@/lib/nas-storage';
 import { getErrorMessage } from '@/lib/error-utils';
@@ -26,24 +26,37 @@ import type {
 } from '@/lib/agora-ai/types';
 import {
   DEFAULT_DOC_LIMIT,
-  MAX_DOC_SCAN,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  buildPageMeta,
   clamp,
   excerpt,
+  resolvePageSize,
   sanitizeFirestoreValue,
   resolveSemanticDocId,
-  normalizeLookupKey
+  normalizeLookupKey,
+  encodeDocumentPageCursor,
+  decodeDocumentPageCursor,
+  type PageMeta,
+  type DocumentPageCursor
 } from '../toolExecutor-helpers';
 
 // ── Re-export helpers for domain modules ─────────────────────────
 export {
   DEFAULT_DOC_LIMIT,
-  MAX_DOC_SCAN,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  buildPageMeta,
   clamp,
   excerpt,
+  resolvePageSize,
   sanitizeFirestoreValue,
   resolveSemanticDocId,
-  normalizeLookupKey
+  normalizeLookupKey,
+  encodeDocumentPageCursor,
+  decodeDocumentPageCursor
 };
+export type { PageMeta, DocumentPageCursor };
 export { adminDb, FieldPath, FieldValue };
 export { getErrorMessage };
 export { normalizeFolderPath };
@@ -222,8 +235,8 @@ export async function resolveDocumentId(
   const docsRef = adminDb.collection('documents');
 
   const query = isPersonalWorkspaceId(ctx.workspaceId)
-    ? docsRef.where('ownerId', '==', ctx.uid).limit(MAX_DOC_SCAN)
-    : docsRef.where('workspaceId', '==', ctx.workspaceId).limit(MAX_DOC_SCAN);
+    ? docsRef.where('ownerId', '==', ctx.uid).limit(DEFAULT_PAGE_SIZE)
+    : docsRef.where('workspaceId', '==', ctx.workspaceId).limit(DEFAULT_PAGE_SIZE);
 
   const snap = await query.get();
   const matches = snap.docs.filter(d => {
@@ -325,8 +338,63 @@ export async function loadDocumentFullContent(
   return { content: '', source: 'empty', bytesRead: 0, truncated: false };
 }
 
-export async function loadWorkspaceDocuments(ctx: AgentExecutionContext, limit = MAX_DOC_SCAN): Promise<StoredDocument[]> {
+const FAILED_PRECONDITION_CODE = 9 as const;
+
+const isFirestoreIndexError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === FAILED_PRECONDITION_CODE || code === 'failed-precondition') return true;
+  const msg = (error as { message?: unknown }).message;
+  return typeof msg === 'string' && /requires an index/i.test(msg);
+};
+
+export interface LoadWorkspaceDocumentsOptions {
+  limit?: number;
+  cursor?: string | null;
+  orderBy?: 'updatedAt' | 'name';
+}
+
+export interface LoadWorkspaceDocumentsPage {
+  documents: StoredDocument[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  scannedThisPage: number;
+}
+
+const toMillisFromUnknown = (value: unknown): number | null => {
+  if (!value) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const d = Date.parse(value);
+    return Number.isNaN(d) ? null : d;
+  }
+  if (typeof value === 'object') {
+    const obj = value as { toMillis?: () => number; seconds?: number; _seconds?: number };
+    if (typeof obj.toMillis === 'function') {
+      try { return obj.toMillis(); } catch { return null; }
+    }
+    if (typeof obj.seconds === 'number') return obj.seconds * 1000;
+    if (typeof obj._seconds === 'number') return obj._seconds * 1000;
+  }
+  return null;
+};
+
+/**
+ * Carga UNA página de documentos del workspace. Esta función NO itera —
+ * devuelve `nextCursor` para que el caller decida si pedir más páginas. Si
+ * `cursor` viene null/undefined arranca desde el principio. Si viene string,
+ * continúa después de ese punto.
+ *
+ * No hay cap de "total" — el caller puede llamar hasta agotar `hasMore`.
+ */
+export async function loadWorkspaceDocumentsPage(
+  ctx: AgentExecutionContext,
+  options: LoadWorkspaceDocumentsOptions = {}
+): Promise<LoadWorkspaceDocumentsPage> {
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  const limit = resolvePageSize(options.limit);
+  const cursor = decodeDocumentPageCursor(options.cursor ?? null);
+
   let query: FirebaseFirestore.Query = adminDb.collection('documents');
   if (isPersonalWorkspaceId(ctx.workspaceId)) {
     query = query.where('ownerId', '==', ctx.uid);
@@ -334,8 +402,73 @@ export async function loadWorkspaceDocuments(ctx: AgentExecutionContext, limit =
   } else {
     query = query.where('workspaceId', '==', ctx.workspaceId);
   }
-  const snap = await query.limit(limit).get();
-  return snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument));
+
+  let snap: FirebaseFirestore.QuerySnapshot;
+  let orderedByUpdatedAt = true;
+  try {
+    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+    if (cursor) {
+      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    }
+    snap = await q.limit(limit).get();
+  } catch (err) {
+    if (isFirestoreIndexError(err)) {
+      console.warn(
+        '[loadWorkspaceDocumentsPage] missing composite index for workspaceId+updatedAt ' +
+        '(o ownerId+workspaceId+updatedAt). Fallback sin orderBy.'
+      );
+      orderedByUpdatedAt = false;
+      snap = await query.limit(limit).get();
+    } else {
+      throw err;
+    }
+  }
+
+  const documents = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument));
+
+  let nextCursor: string | null = null;
+  if (orderedByUpdatedAt && snap.size >= limit && snap.docs.length > 0) {
+    const last = snap.docs[snap.docs.length - 1];
+    if (last) {
+      const updatedAtMs = toMillisFromUnknown((last.data() as { updatedAt?: unknown }).updatedAt);
+      if (updatedAtMs !== null) {
+        nextCursor = encodeDocumentPageCursor({ updatedAtMs, id: last.id });
+      }
+    }
+  }
+
+  return {
+    documents,
+    nextCursor,
+    hasMore: nextCursor !== null,
+    scannedThisPage: documents.length
+  };
+}
+
+/**
+ * Devuelve TODA la primera página del workspace. Históricamente esta función
+ * existía con un cap implícito (5000); ahora retorna una página de tamaño
+ * `DEFAULT_PAGE_SIZE` y deja al caller decidir si necesita iterar.
+ *
+ * Para iterar todas las páginas, usa `loadWorkspaceDocumentsPage` con cursor.
+ */
+export async function loadWorkspaceDocuments(
+  ctx: AgentExecutionContext,
+  limit = DEFAULT_PAGE_SIZE
+): Promise<StoredDocument[]> {
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit });
+  return page.documents;
+}
+
+export async function loadWorkspaceDocumentsWithMeta(
+  ctx: AgentExecutionContext,
+  options: LoadWorkspaceDocumentsOptions = {}
+): Promise<{ documents: StoredDocument[]; page: PageMeta }> {
+  const page = await loadWorkspaceDocumentsPage(ctx, options);
+  return {
+    documents: page.documents,
+    page: buildPageMeta(page.scannedThisPage, page.nextCursor)
+  };
 }
 
 export function summarizeDocumentMeta(doc: StoredDocument) {
@@ -451,7 +584,7 @@ export async function listWorkspaceSnippets(ctx: AgentExecutionContext): Promise
   if (isPersonalWorkspaceId(ctx.workspaceId)) {
     query = query.where('ownerId', '==', ctx.uid);
   }
-  const snap = await query.limit(MAX_DOC_SCAN).get();
+  const snap = await query.limit(DEFAULT_PAGE_SIZE).get();
   return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredSnippet));
 }
 

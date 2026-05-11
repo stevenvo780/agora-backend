@@ -6,13 +6,15 @@ import { AGENT_UI_PANEL_DESCRIPTION, AGENT_UI_PANELS } from '@/lib/agora-ai/uiPa
 export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: 'list_documents',
-    description: 'Lista documentos del workspace actual. Úsala al explorar el espacio de trabajo o antes de leer, mover o editar archivos.',
+    description: 'Lista documentos del workspace actual. Devuelve una página; si la respuesta incluye page.hasMore=true, hay más documentos: llama de nuevo pasando page.nextCursor para continuar.',
     parameters: {
       type: 'object',
       properties: {
         folder: { type: 'string', description: 'Carpeta concreta a inspeccionar. Opcional.' },
         type: { type: 'string', enum: Object.values(DocumentType), description: 'Filtra por tipo de documento. Opcional.' },
-        limit: { type: 'number', description: 'Máximo de resultados, entre 1 y 100.' }
+        limit: { type: 'number', description: 'Máximo de items devueltos al modelo (post-filtro), entre 1 y 100.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000. Solo subir si necesitas escanear más por página.' },
+        cursor: { type: 'string', description: 'Cursor opaco devuelto en page.nextCursor de una llamada previa para paginar.' }
       },
       additionalProperties: false
     }
@@ -99,12 +101,14 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'search_documents',
-    description: 'Busca documentos por nombre, carpeta o contenido dentro del workspace.',
+    description: 'Busca documentos por nombre, carpeta o contenido. Devuelve una página; itera page.nextCursor si page.hasMore=true.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Texto de búsqueda.' },
-        limit: { type: 'number', description: 'Máximo de resultados, entre 1 y 25.' }
+        limit: { type: 'number', description: 'Máximo de matches devueltos al modelo, entre 1 y 25.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco devuelto en page.nextCursor para paginar.' }
       },
       required: ['query'],
       additionalProperties: false
@@ -143,24 +147,28 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'inspect_workspace',
-    description: 'Construye un inventario amplio del workspace: carpetas, documentos, snippets, tablero, glosario semántico y estado del worker si está disponible. Úsala como primer paso para tareas generales sobre "todo el workspace".',
+    description: 'Construye un inventario del workspace (carpetas, documentos, snippets, tablero, semántico, worker opcional). Procesa UNA página de docs por llamada; itera page.nextCursor si page.hasMore=true para escanear workspaces grandes.',
     parameters: {
       type: 'object',
       properties: {
         includeWorker: { type: 'boolean', description: 'Si true, consulta el Hub para saber si hay worker conectado.' },
-        limit: { type: 'number', description: 'Máximo de elementos por sección, entre 5 y 100.' }
+        limit: { type: 'number', description: 'Máximo de items mostrados por sección en la respuesta, entre 5 y 100.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para continuar la paginación de documentos.' }
       },
       additionalProperties: false
     }
   },
   {
     name: 'search_workspace',
-    description: 'Busca en todo el workspace a la vez: documentos, snippets, conceptos semánticos y tarjetas Kanban.',
+    description: 'Busca en una página del workspace: documentos, snippets, conceptos semánticos y tarjetas Kanban. Itera page.nextCursor si page.hasMore=true.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Texto de búsqueda.' },
-        limit: { type: 'number', description: 'Máximo de resultados por sección, entre 1 y 25.' }
+        limit: { type: 'number', description: 'Máximo de resultados por sección, entre 1 y 25.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para continuar la paginación de documentos.' }
       },
       required: ['query'],
       additionalProperties: false
@@ -168,7 +176,7 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'read_workspace_bundle',
-    description: 'Lee un paquete de contexto del workspace en una sola llamada. Puede leer documentos concretos, una carpeta, resultados de búsqueda, snippets y glosario semántico con límites de tamaño.',
+    description: 'Lee un paquete de contexto del workspace. Procesa una página del workspace por llamada (excepto si das documentIds explícitos). Itera page.nextCursor si page.hasMore=true.',
     parameters: {
       type: 'object',
       properties: {
@@ -179,7 +187,9 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
         includeSnippets: { type: 'boolean', description: 'Incluye snippets del workspace.' },
         includeSemantic: { type: 'boolean', description: 'Incluye conceptos y relaciones semánticas.' },
         maxDocuments: { type: 'number', description: 'Máximo de documentos, entre 1 y 50.' },
-        maxCharsPerDocument: { type: 'number', description: 'Máximo de caracteres por documento, entre 500 y 12000.' }
+        maxCharsPerDocument: { type: 'number', description: 'Máximo de caracteres por documento, entre 500 y 12000.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para continuar paginación.' }
       },
       additionalProperties: false
     }
@@ -1114,20 +1124,29 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'find_broken_links',
-    description: 'Encuentra enlaces markdown que apuntan a docs inexistentes en el workspace. Ignora URLs externas y anchors.',
+    description: 'Encuentra enlaces markdown que apuntan a docs inexistentes en el workspace. Ignora URLs externas y anchors. Procesa una página de target-docs por llamada; itera page.nextCursor para escanear todo el workspace.',
     parameters: {
       type: 'object',
-      properties: { documentId: { type: 'string' } },
+      properties: {
+        documentId: { type: 'string' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para continuar paginación de docs target.' }
+      },
       required: ['documentId'],
       additionalProperties: false
     }
   },
   {
     name: 'find_duplicates',
-    description: 'Detecta documentos exactamente duplicados (mismo hash) y similares (Jaccard de shingles). minSimilarity 0.1-1, default 0.6.',
+    description: 'Detecta documentos duplicados (mismo hash) y similares (Jaccard de shingles). Procesa UNA página por llamada con confirm:true. Si page.hasMore=true, llama de nuevo con el cursor para procesar más páginas.',
     parameters: {
       type: 'object',
-      properties: { minSimilarity: { type: 'number' } },
+      properties: {
+        minSimilarity: { type: 'number', description: '0.1-1, default 0.6.' },
+        confirm: { type: 'boolean', description: 'Requerido en la primera llamada para confirmar el escaneo.' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para procesar la siguiente página.' }
+      },
       additionalProperties: false
     }
   },
@@ -1259,12 +1278,14 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'find_large_documents',
-    description: 'Lista documentos cuyo size supera minBytes (default 100KB), ordenados desc.',
+    description: 'Lista documentos cuyo size supera minBytes (default 100KB), ordenados desc. Procesa una página por llamada; itera page.nextCursor para escanear más.',
     parameters: {
       type: 'object',
       properties: {
         minBytes: { type: 'number' },
-        limit: { type: 'number', description: '1..50, default 20' }
+        limit: { type: 'number', description: '1..50, default 20' },
+        pageSize: { type: 'number', description: 'Tamaño de la página de scan Firestore. Default 2000, máx 10000.' },
+        cursor: { type: 'string', description: 'Cursor opaco para continuar paginación.' }
       },
       additionalProperties: false
     }

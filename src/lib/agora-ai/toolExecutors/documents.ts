@@ -3,15 +3,20 @@ import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, fail, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
   ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, loadDocumentFullContent,
-  loadWorkspaceDocuments,
+  loadWorkspaceDocumentsPage,
+  buildPageMeta,
+  encodeDocumentPageCursor,
+  decodeDocumentPageCursor,
+  resolvePageSize,
   summarizeDocumentMeta, syncTextDocumentToStorage, maybeDeleteStorageObject,
   listWorkspaceSnippets, loadBoardStateIfExists, loadSemanticState,
   fetchWorkerStatus,
   normalizeFolderPath, adminDb, FieldValue,
   DocumentType, PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId,
-  MAX_DOC_SCAN, DEFAULT_DOC_LIMIT,
+  DEFAULT_PAGE_SIZE, DEFAULT_DOC_LIMIT,
   type StoredDocument, type StoredSnippet, type StoredBoardColumn, type StoredBoardCard
 } from './shared';
+import { Timestamp } from 'firebase-admin/firestore';
 import { EMPTY_SEMANTIC_WORKSPACE_STATE } from '@/lib/semantic/workspace-state';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
@@ -61,15 +66,18 @@ function collectWorkspaceFolders(documents: StoredDocument[]): {
 
 async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) {
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 40, 5, 100);
+  const pageSize = resolvePageSize(call.args.pageSize ?? call.args.docPageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
   const includeWorker = call.args.includeWorker === true;
-  const [workspace, documents, snippets, semantic, board, worker] = await Promise.all([
+  const [workspace, page, snippets, semantic, board, worker] = await Promise.all([
     fetchWorkspaceDoc(ctx.workspaceId, ctx.uid),
-    loadWorkspaceDocuments(ctx, MAX_DOC_SCAN),
+    loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor }),
     listWorkspaceSnippets(ctx).catch(() => [] as StoredSnippet[]),
     loadSemanticState(ctx).catch(() => EMPTY_SEMANTIC_WORKSPACE_STATE),
     loadBoardStateIfExists(ctx).catch(() => ({ columns: [] as StoredBoardColumn[], cards: [] as StoredBoardCard[] })),
     includeWorker ? fetchWorkerStatus(ctx, 3000) : Promise.resolve(null)
   ]);
+  const documents = page.documents;
 
   const { folders, emptyFolders, folderDocCountMap } = collectWorkspaceFolders(documents);
 
@@ -81,13 +89,18 @@ async function inspectWorkspace(call: AgentToolCall, ctx: AgentExecutionContext)
     .slice(0, limit)
     .map(summarizeDocumentMeta);
 
-  return ok(call, `Inventarié el workspace: ${documents.length} documento(s), ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'}), ${snippets.length} snippet(s), ${semantic.concepts.length} concepto(s).`, {
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore
+    ? ` (página de ${page.scannedThisPage}; quedan más documentos — itera con cursor para escanear todo el workspace)`
+    : '';
+  return ok(call, `Inventarié el workspace: ${documents.length} documento(s)${continuationNote}, ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'}), ${snippets.length} snippet(s), ${semantic.concepts.length} concepto(s).`, {
     workspace: {
       id: String(workspace.id),
       name: String(workspace.name || 'Workspace'),
       type: String(workspace.type || (isPersonalWorkspaceId(ctx.workspaceId) ? 'personal' : 'shared')),
       membersCount: Array.isArray(workspace.members) ? workspace.members.length : 1
     },
+    page: pageMeta,
     inventory: {
       documentCount: documents.length,
       textDocumentCount: textDocs.length,
@@ -133,12 +146,15 @@ async function searchWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) 
   const queryText = String(call.args.query || '').trim();
   if (!queryText) throw new Error('query es requerido');
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 10, 1, 25);
-  const [documents, snippets, semantic, board] = await Promise.all([
-    loadWorkspaceDocuments(ctx, MAX_DOC_SCAN),
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const [page, snippets, semantic, board] = await Promise.all([
+    loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor }),
     listWorkspaceSnippets(ctx).catch(() => [] as StoredSnippet[]),
     loadSemanticState(ctx).catch(() => EMPTY_SEMANTIC_WORKSPACE_STATE),
     loadBoardStateIfExists(ctx).catch(() => ({ columns: [] as StoredBoardColumn[], cards: [] as StoredBoardCard[] }))
   ]);
+  const documents = page.documents;
 
   const documentResults = documents
     .filter((doc: StoredDocument) => containsQueryTokens([doc.name, doc.folder, doc.content].map(String).join('\n'), queryText))
@@ -173,8 +189,11 @@ async function searchWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) 
     }));
 
   const total = documentResults.length + snippetResults.length + conceptResults.length + cardResults.length;
-  return ok(call, `La búsqueda global devolvió ${total} resultado(s).`, {
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore ? ` (página de ${page.scannedThisPage} doc(s); itera con cursor para escanear más)` : '';
+  return ok(call, `La búsqueda global devolvió ${total} resultado(s)${continuationNote}.`, {
     query: queryText,
+    page: pageMeta,
     results: {
       documents: documentResults,
       snippets: snippetResults,
@@ -198,21 +217,28 @@ async function readWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionConte
     ? call.args.documentIds.map(String).map((id) => id.trim()).filter(Boolean)
     : [];
 
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+
   let docs: StoredDocument[];
+  let pageMeta = buildPageMeta(0, null);
   if (documentIds.length > 0) {
     docs = await Promise.all(documentIds.slice(0, maxDocuments).map((id) => fetchDocumentForUser(id, ctx)));
+    pageMeta = buildPageMeta(docs.length, null);
   } else {
-    docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+    const loaded = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+    pageMeta = buildPageMeta(loaded.scannedThisPage, loaded.nextCursor);
+    let filtered = loaded.documents;
     if (folder) {
-      docs = docs.filter((doc) => {
+      filtered = filtered.filter((doc) => {
         const docFolder = normalizeFolderPath(doc.folder);
         return docFolder === folder || docFolder.startsWith(`${folder}/`);
       });
     }
     if (queryText) {
-      docs = docs.filter((doc) => containsQueryTokens([doc.name, doc.folder, doc.content].map(String).join('\n'), queryText));
+      filtered = filtered.filter((doc) => containsQueryTokens([doc.name, doc.folder, doc.content].map(String).join('\n'), queryText));
     }
-    docs = docs
+    docs = filtered
       .sort((left, right) => toEpoch(right.updatedAt) - toEpoch(left.updatedAt))
       .slice(0, maxDocuments);
   }
@@ -251,8 +277,10 @@ async function readWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionConte
     };
   }
 
-  return ok(call, `Leí un paquete de contexto con ${docs.length} documento(s).`, {
+  const continuationNote = pageMeta.hasMore ? ` (página de ${pageMeta.scannedThisPage} doc(s); itera con cursor para más)` : '';
+  return ok(call, `Leí un paquete de contexto con ${docs.length} documento(s)${continuationNote}.`, {
     filters: { folder, query: queryText, documentIds },
+    page: pageMeta,
     bundle
   });
 }
@@ -264,6 +292,9 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
     : null;
   const type = typeof call.args.type === 'string' ? call.args.type : null;
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : DEFAULT_DOC_LIMIT, 1, 100);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursorParam = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const cursor = decodeDocumentPageCursor(cursorParam);
 
   let query: FirebaseFirestore.Query = adminDb.collection('documents');
   if (isPersonalWorkspaceId(ctx.workspaceId)) {
@@ -276,9 +307,42 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
     query = query.where('type', '==', type);
   }
 
-  const snap = await query.limit(limit * 3).get();
+  let snap: FirebaseFirestore.QuerySnapshot;
+  let orderedByUpdatedAt = true;
+  try {
+    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+    if (cursor) {
+      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    }
+    snap = await q.limit(pageSize).get();
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    const msg = (err as { message?: unknown }).message;
+    const indexErr = code === 9 || code === 'failed-precondition'
+      || (typeof msg === 'string' && /requires an index/i.test(msg));
+    if (indexErr) {
+      console.warn('[list_documents] missing composite index, fallback sin orderBy.');
+      orderedByUpdatedAt = false;
+      snap = await query.limit(pageSize).get();
+    } else {
+      throw err;
+    }
+  }
   const allDocs = snap.docs
     .map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument));
+
+  let nextCursor: string | null = null;
+  if (orderedByUpdatedAt && snap.size >= pageSize && snap.docs.length > 0) {
+    const last = snap.docs[snap.docs.length - 1];
+    if (last) {
+      const rawUpdated = (last.data() as { updatedAt?: unknown }).updatedAt;
+      const ms = toEpoch(rawUpdated);
+      if (ms > 0) {
+        nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+      }
+    }
+  }
+  const pageMeta = buildPageMeta(allDocs.length, nextCursor);
 
   // Try exact folder match first; if 0 results, fall back to fuzzy match
   // (case-insensitive, whitespace-stripped) to handle agent typos like "Clase 3" vs "Clase3"
@@ -323,7 +387,8 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
       updatedAt: formatTimestamp(doc['updatedAt'])
     }));
 
-  return ok(call, `Encontré ${documents.length} documento(s)${folder ? ` en "${folder}" (incluye subcarpetas)` : ''}.`, { documents });
+  const continuationNote = pageMeta.hasMore ? ` (página de ${pageMeta.scannedThisPage} doc(s); itera con cursor para más)` : '';
+  return ok(call, `Encontré ${documents.length} documento(s)${folder ? ` en "${folder}" (incluye subcarpetas)` : ''}${continuationNote}.`, { documents, page: pageMeta });
 }
 
 async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
@@ -573,6 +638,9 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
   const queryText = String(call.args.query || '').trim().toLowerCase();
   if (!queryText) throw new Error('query es requerido');
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 10, 1, 25);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursorParam = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const cursor = decodeDocumentPageCursor(cursorParam);
 
   let query: FirebaseFirestore.Query = adminDb.collection('documents');
   if (isPersonalWorkspaceId(ctx.workspaceId)) {
@@ -582,7 +650,37 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
     query = query.where('workspaceId', '==', ctx.workspaceId);
   }
 
-  const snap = await query.limit(MAX_DOC_SCAN).get();
+  let snap: FirebaseFirestore.QuerySnapshot;
+  let orderedByUpdatedAt = true;
+  try {
+    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+    if (cursor) {
+      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    }
+    snap = await q.limit(pageSize).get();
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    const msg = (err as { message?: unknown }).message;
+    const indexErr = code === 9 || code === 'failed-precondition'
+      || (typeof msg === 'string' && /requires an index/i.test(msg));
+    if (indexErr) {
+      console.warn('[search_documents] missing composite index, fallback sin orderBy.');
+      orderedByUpdatedAt = false;
+      snap = await query.limit(pageSize).get();
+    } else {
+      throw err;
+    }
+  }
+  let nextCursor: string | null = null;
+  if (orderedByUpdatedAt && snap.size >= pageSize && snap.docs.length > 0) {
+    const last = snap.docs[snap.docs.length - 1];
+    if (last) {
+      const rawUpdated = (last.data() as { updatedAt?: unknown }).updatedAt;
+      const ms = toEpoch(rawUpdated);
+      if (ms > 0) nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+    }
+  }
+  const pageMeta = buildPageMeta(snap.size, nextCursor);
 
   // Tokenize query: each word must appear somewhere in the document (AND logic)
   const queryTokens = queryText.split(/\s+/).filter(t => t.length >= 2);
@@ -604,6 +702,8 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
       preview: excerpt(doc.content || '', 180)
     }));
 
+  const continuationNote = pageMeta.hasMore ? ` (página de ${pageMeta.scannedThisPage} doc(s); itera con cursor para más)` : '';
+
   // If AND match found nothing, try OR match (any token)
   if (results.length === 0) {
     const orResults = snap.docs
@@ -623,21 +723,25 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
         type: doc.type || DocumentType.Text,
         preview: excerpt(doc.content || '', 180)
       }));
-    return ok(call, `La búsqueda devolvió ${orResults.length} resultado(s) (coincidencia parcial).`, { results: orResults });
+    return ok(call, `La búsqueda devolvió ${orResults.length} resultado(s) (coincidencia parcial)${continuationNote}.`, { results: orResults, page: pageMeta });
   }
 
-  return ok(call, `La búsqueda devolvió ${results.length} resultado(s).`, { results });
+  return ok(call, `La búsqueda devolvió ${results.length} resultado(s)${continuationNote}.`, { results, page: pageMeta });
 }
 
 async function listFolders(call: AgentToolCall, ctx: AgentExecutionContext) {
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
-  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
-  const { folders, emptyFolders, folderDocCountMap } = collectWorkspaceFolders(documents);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const { folders, emptyFolders, folderDocCountMap } = collectWorkspaceFolders(page.documents);
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore ? ' (página parcial; itera con cursor si necesitas escanear todo el workspace para contar carpetas)' : '';
 
   return ok(
     call,
-    `Encontré ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'}).`,
-    { folders, emptyFolders, folderDocCountMap }
+    `Encontré ${folders.length} carpeta(s) (${emptyFolders.length} vacía${emptyFolders.length === 1 ? '' : 's'})${continuationNote}.`,
+    { folders, emptyFolders, folderDocCountMap, page: pageMeta }
   );
 }
 
@@ -661,32 +765,39 @@ async function duplicateDocument(call: AgentToolCall, ctx: AgentExecutionContext
 }
 
 async function getStorageUsage(call: AgentToolCall, ctx: AgentExecutionContext) {
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
   let totalBytes = 0;
   let textBytes = 0;
   let blobBytes = 0;
   let count = 0;
-  for (const doc of docs) {
+  for (const doc of page.documents) {
     if ((doc.type ?? DocumentType.Text) === DocumentType.Folder) continue;
     count += 1;
     const size = typeof doc.size === 'number' ? doc.size : (doc.content || '').length;
     totalBytes += size;
     if (doc.storagePath) blobBytes += size; else textBytes += size;
   }
-  return ok(call, `Storage: ${count} doc(s), ${(totalBytes / 1024).toFixed(1)} KB total (${(blobBytes / 1024).toFixed(1)} KB en MinIO, ${(textBytes / 1024).toFixed(1)} KB en Firestore cache).`, {
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore ? ' (página parcial; itera con cursor para contar todo el workspace)' : '';
+  return ok(call, `Storage (página): ${count} doc(s), ${(totalBytes / 1024).toFixed(1)} KB total (${(blobBytes / 1024).toFixed(1)} KB en MinIO, ${(textBytes / 1024).toFixed(1)} KB en Firestore cache)${continuationNote}.`, {
     workspaceId: ctx.workspaceId,
     documentCount: count,
     totalBytes,
     minioBytes: blobBytes,
-    firestoreBytes: textBytes
+    firestoreBytes: textBytes,
+    page: pageMeta
   });
 }
 
 async function findLargeDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
   const minBytes = typeof call.args.minBytes === 'number' ? call.args.minBytes : 100_000;
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 50);
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
-  const candidates = docs
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const candidates = page.documents
     .filter(d => (d.type ?? DocumentType.Text) !== DocumentType.Folder)
     .map(d => ({
       id: d.id,
@@ -699,14 +810,19 @@ async function findLargeDocuments(call: AgentToolCall, ctx: AgentExecutionContex
     .filter(d => d.bytes >= minBytes)
     .sort((a, b) => b.bytes - a.bytes)
     .slice(0, limit);
-  return ok(call, `${candidates.length} documento(s) ≥ ${minBytes} bytes.`, { documents: candidates, minBytes });
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore ? ' (página parcial; itera con cursor para escanear todo el workspace)' : '';
+  return ok(call, `${candidates.length} documento(s) ≥ ${minBytes} bytes${continuationNote}.`, { documents: candidates, minBytes, page: pageMeta });
 }
 
 async function listRecentActivity(call: AgentToolCall, ctx: AgentExecutionContext) {
   const sinceHours = clamp(typeof call.args.sinceHours === 'number' ? call.args.sinceHours : 24, 1, 720);
   const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 20, 1, 50);
   const sinceMs = Date.now() - sinceHours * 3600 * 1000;
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const docs = page.documents;
   const recent = docs
     .filter(d => (d.type ?? DocumentType.Text) !== DocumentType.Folder)
     .map(d => ({ doc: d, ts: toEpoch(d.updatedAt) }))
@@ -733,11 +849,19 @@ async function listFavorites(call: AgentToolCall, ctx: AgentExecutionContext) {
   if (favoriteIds.length === 0) {
     return ok(call, 'No hay favoritos en este workspace.', { favorites: [] });
   }
-  const docs = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
-  const favorites = favoriteIds
-    .map(id => docs.find(d => d.id === id))
-    .filter((d): d is StoredDocument => Boolean(d))
-    .map(d => ({ id: d.id, name: d.name || 'Sin título', folder: normalizeFolderPath(d.folder) }));
+  // Favoritos: resuelvo cada uno por ID directo en vez de scan completo.
+  // Esto escala correctamente a workspaces de N>>5000 docs.
+  const favorites: Array<{ id: string; name: string; folder: string }> = [];
+  await Promise.all(favoriteIds.map(async (id) => {
+    const snap = await adminDb.collection('documents').doc(id).get();
+    if (!snap.exists) return;
+    const data = snap.data() as Record<string, unknown>;
+    favorites.push({
+      id: snap.id,
+      name: (typeof data.name === 'string' ? data.name : '') || 'Sin título',
+      folder: normalizeFolderPath(typeof data.folder === 'string' ? data.folder : undefined)
+    });
+  }));
   return ok(call, `${favorites.length} favorito(s) en este workspace.`, { favorites });
 }
 
@@ -856,13 +980,34 @@ async function createFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   }, ctx);
 }
 
+/**
+ * Itera TODAS las páginas del workspace acumulando los documentos.
+ * Solo usar en operaciones que NECESITAN ver todo el workspace (rename/delete
+ * de carpeta cascada). El resto debería paginar y devolver `nextCursor`.
+ */
+async function loadAllWorkspaceDocuments(ctx: AgentExecutionContext): Promise<StoredDocument[]> {
+  const all: StoredDocument[] = [];
+  let cursor: string | null = null;
+  let more = true;
+  while (more) {
+    const page = await loadWorkspaceDocumentsPage(ctx, { limit: DEFAULT_PAGE_SIZE, cursor });
+    all.push(...page.documents);
+    if (!page.nextCursor) {
+      more = false;
+    } else {
+      cursor = page.nextCursor;
+    }
+  }
+  return all;
+}
+
 async function renameFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   const fromPath = normalizeFolderPath(String(call.args.fromPath || '').trim());
   const toName = String(call.args.toName || '').trim();
   if (!fromPath || !toName) throw new Error('fromPath y toName son requeridos');
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
 
-  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const documents = await loadAllWorkspaceDocuments(ctx);
   const folderDocs = documents.filter(d =>
     d.type === DocumentType.Folder &&
     normalizeFolderPath(`${d.folder ?? ''}${d.folder ? '/' : ''}${d.name ?? ''}`) === fromPath
@@ -909,7 +1054,7 @@ async function deleteFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   if (!folderPath) throw new Error('folderPath es requerido');
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
 
-  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const documents = await loadAllWorkspaceDocuments(ctx);
   const folderDocs = documents.filter(d =>
     d.type === DocumentType.Folder &&
     normalizeFolderPath(`${d.folder ?? ''}${d.folder ? '/' : ''}${d.name ?? ''}`) === folderPath
@@ -1020,7 +1165,10 @@ async function uploadExternalUrl(call: AgentToolCall, ctx: AgentExecutionContext
 
 async function downloadWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionContext) {
   const folderPath = typeof call.args.folderPath === 'string' ? normalizeFolderPath(call.args.folderPath) : undefined;
-  const documents = await loadWorkspaceDocuments(ctx, MAX_DOC_SCAN);
+  const pageSize = resolvePageSize(call.args.pageSize, DEFAULT_PAGE_SIZE);
+  const cursor = typeof call.args.cursor === 'string' ? call.args.cursor : null;
+  const page = await loadWorkspaceDocumentsPage(ctx, { limit: pageSize, cursor });
+  const documents = page.documents;
   const filtered = folderPath
     ? documents.filter(d => normalizeFolderPath(d.folder) === folderPath || normalizeFolderPath(d.folder).startsWith(`${folderPath}/`))
     : documents;
@@ -1034,11 +1182,14 @@ async function downloadWorkspaceBundle(call: AgentToolCall, ctx: AgentExecutionC
     size: typeof d.size === 'number' ? d.size : (d.content?.length ?? 0),
     updatedAt: formatTimestamp(d.updatedAt)
   }));
-  return ok(call, `Manifiesto de ${manifest.length} documento(s)${folderPath ? ` bajo "${folderPath}"` : ''}. Para zip real usa el flujo del frontend (Exportar) — el agente expone solo el manifiesto.`, {
+  const pageMeta = buildPageMeta(page.scannedThisPage, page.nextCursor);
+  const continuationNote = pageMeta.hasMore ? ' (página parcial; itera con cursor para construir el manifiesto completo)' : '';
+  return ok(call, `Manifiesto de ${manifest.length} documento(s)${folderPath ? ` bajo "${folderPath}"` : ''}${continuationNote}. Para zip real usa el flujo del frontend (Exportar) — el agente expone solo el manifiesto.`, {
     workspaceId: ctx.workspaceId,
     folderPath: folderPath || null,
     documentCount: manifest.length,
     manifest: manifest.slice(0, 200),
+    page: pageMeta,
     notImplementedFully: true,
     suggestion: 'Para zip binario el cliente debe llamar a /api/workspaces/:id/export'
   });
