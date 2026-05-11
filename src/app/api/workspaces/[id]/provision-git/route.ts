@@ -89,10 +89,9 @@ export async function POST(req: NextRequest, context: RouteContext) {
                 provisionedAt: FieldValue.serverTimestamp()
             };
             await adminDb.collection('workspaces').doc(workspaceId).set({ git: gitPatch }, { merge: true });
-            // Siembra `.gitignore` con plantilla vacía. El user decide qué excluir
-            // de los commits desde la web.
-            seedGitignore(workspaceId, auth.uid).catch((e) => console.warn('[provision-git] seed .gitignore failed:', e?.message));
         }
+
+        seedGitignore(workspaceId, auth.uid).catch((e) => console.warn('[provision-git] seed .gitignore failed:', e?.message));
 
         return NextResponse.json({
             ok: true,

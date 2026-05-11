@@ -6,10 +6,10 @@
  *                   ignora el sync NAS↔worker. Defaults razonables que evitan
  *                   conflictos típicos (vim swap files, .DS_Store, etc.).
  *
- *   `.gitignore`  — sólo cuando se provisiona el repo Git. Plantilla VACÍA
- *                   (sólo encabezado). El user decide qué excluir del commit
- *                   git, sin imponer defaults — el sync al NAS ya filtra lo
- *                   problemático para sync, y para git el coste es del user.
+ *   `.gitignore`  — sólo cuando se provisiona el repo Git. Plantilla con
+ *                   defaults razonables (node_modules, .next, dist, .env,
+ *                   .DS_Store, .vscode, .idea, .syncignore). El user puede
+ *                   editarla desde la web.
  */
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -39,18 +39,20 @@ desktop.ini
 .cache/
 `;
 
-export const GITIGNORE_DEFAULT = `# .gitignore — reglas de exclusión para los commits a Git.
-# Formato gitignore estándar. Una regla por línea.
-# Edita este archivo para indicar qué NO incluir en commits.
-# Ejemplos comunes (descoméntalos si aplican):
+export const GITIGNORE_DEFAULT = `# .gitignore — reglas para excluir archivos del commit Git.
+# Una regla por línea, formato gitignore estándar.
 
-# node_modules/
-# .next/
-# dist/
-# build/
-# *.log
-# .env
-# .env.local
+node_modules/
+.next/
+dist/
+build/
+*.log
+.env
+.env.local
+.DS_Store
+.vscode/
+.idea/
+.syncignore
 `;
 
 interface SeedDefaultDocOptions {

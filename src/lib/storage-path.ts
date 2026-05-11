@@ -4,12 +4,6 @@ import { isPersonalWorkspaceId } from '@/types/workspace';
 
 const SAFE_NAME_REGEX = /[\\/]/g;
 
-/** Extensions that are NOT markdown and should keep their original extension in Storage. */
-const NON_MARKDOWN_TEXT_EXTS = new Set([
-  '.st', '.json', '.xml', '.yaml', '.yml', '.toml', '.csv',
-  '.html', '.css', '.scss', '.less', '.ini', '.log', '.txt'
-]);
-
 export const sanitizeFileName = (value: string) => value.replace(SAFE_NAME_REGEX, '_');
 
 export const ensureMarkdownFileName = (value: string) => {
@@ -23,21 +17,16 @@ export const ensureMarkdownFileName = (value: string) => {
  * - Other text files (.st, .json, etc.): keep original extension
  * - No extension: default to .md
  */
+const VALID_EXTENSION_REGEX = /\.[a-z0-9]{1,16}$/i;
+
 export const ensureTextFileName = (value: string) => {
   const safe = sanitizeFileName(value || 'Sin titulo');
-  const lower = safe.toLowerCase();
-  // Already .md → keep as-is
-  if (lower.endsWith('.md')) return safe;
-  // Dotfiles (.gitignore, .env, .editorconfig...) — el nombre ES el archivo;
-  // no agregar .md ni tratarlos como extensiones desconocidas.
+  // Dotfiles (.gitignore, .env, .editorconfig...) — el nombre ES el archivo.
   if (safe.startsWith('.') && safe.indexOf('.', 1) === -1) return safe;
-  // Known non-markdown text extension → keep as-is
-  const dotIdx = lower.lastIndexOf('.');
-  if (dotIdx >= 0) {
-    const ext = lower.slice(dotIdx);
-    if (NON_MARKDOWN_TEXT_EXTS.has(ext)) return safe;
-  }
-  // No extension or unknown → add .md
+  // Cualquier extensión válida se preserva (no solo el set conocido).
+  // Esto permite crear .py, .rs, .go, .ipynb, etc. sin agregar .md.
+  if (VALID_EXTENSION_REGEX.test(safe)) return safe;
+  // Sin extensión → default a .md (markdown es el formato base).
   return `${safe}.md`;
 };
 
