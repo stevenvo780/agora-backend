@@ -197,7 +197,10 @@ const DOCUMENT_READ_TOOLS = new Set([
   'lint_st_document',
   'extract_text_from_pdf',
   'list_dictionary_words',
-  'find_unused_snippets'
+  'find_unused_snippets',
+  'query_citation_graph',
+  'find_related_via_graph',
+  'expand_context'
 ]);
 
 const DOCUMENT_WRITE_TOOLS = new Set([

@@ -54,10 +54,15 @@ const NEW_TOOLS_TIER_9_OBS = [
   'get_subscription_status', 'list_quota', 'get_workspace_quota_detail'
 ];
 
+const NEW_TOOLS_TIER_10_CITATIONS = [
+  'query_citation_graph', 'find_related_via_graph', 'expand_context'
+];
+
 const ALL_NEW_TOOLS = [
   ...NEW_TOOLS_TIER_1, ...NEW_TOOLS_TIER_2_ADMIN, ...NEW_TOOLS_TIER_3_GIT,
   ...NEW_TOOLS_TIER_4_WORKER, ...NEW_TOOLS_TIER_5_ST, ...NEW_TOOLS_TIER_6_BOARD,
-  ...NEW_TOOLS_TIER_7_INTEL, ...NEW_TOOLS_TIER_8_UI, ...NEW_TOOLS_TIER_9_OBS
+  ...NEW_TOOLS_TIER_7_INTEL, ...NEW_TOOLS_TIER_8_UI, ...NEW_TOOLS_TIER_9_OBS,
+  ...NEW_TOOLS_TIER_10_CITATIONS
 ];
 
 test('todas las tools nuevas tienen definition en toolDefinitions', () => {

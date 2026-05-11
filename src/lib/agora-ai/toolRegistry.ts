@@ -6,7 +6,8 @@ const CACHEABLE_TOOL_NAMES = new Set([
   'list_documents', 'list_folders', 'read_document', 'search_documents',
   'inspect_workspace', 'list_snippets', 'get_semantic_state',
   'list_kanban_cards', 'list_st_definitions', 'workspace_status',
-  'get_document_metadata', 'fetch_url', 'read_agora_doc'
+  'get_document_metadata', 'fetch_url', 'read_agora_doc',
+  'query_citation_graph', 'find_related_via_graph', 'expand_context'
 ]);
 
 const DESTRUCTIVE_TOOL_NAMES = new Set([

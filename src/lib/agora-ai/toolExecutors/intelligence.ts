@@ -6,8 +6,11 @@ import {
   ok, confirm, clamp, fetchDocumentForUser, loadDocumentFullContent,
   loadWorkspaceDocumentsPage, DEFAULT_PAGE_SIZE, buildPageMeta, resolvePageSize,
   resolveSnippetId, adminDb, FieldValue, DocumentType,
+  containsQueryTokens,
   type StoredDocument
 } from './shared';
+import { expandSubgraph, loadWorkspaceDocMetaIndex } from '@/lib/citations/graph-store';
+import { isCitationKind, type CitationKind } from '@/lib/citations/types';
 
 const FETCH_URL_MAX_BYTES_DEFAULT = 50_000;
 const FETCH_URL_MAX_BYTES_HARD = 200_000;
@@ -493,6 +496,208 @@ async function semanticSearchWorkspaceStub(call: AgentToolCall, _ctx: AgentExecu
   });
 }
 
+const normalizeKindsArg = (raw: unknown): CitationKind[] | undefined => {
+  if (!Array.isArray(raw)) return undefined;
+  const out: CitationKind[] = [];
+  for (const item of raw) {
+    if (isCitationKind(item)) out.push(item);
+  }
+  return out.length > 0 ? out : undefined;
+};
+
+const normalizeDocIdsArg = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim().length > 0) out.push(item.trim());
+  }
+  return out;
+};
+
+const resolveDocIdsForCtx = async (ids: string[], ctx: AgentExecutionContext): Promise<string[]> => {
+  const resolved: string[] = [];
+  for (const raw of ids) {
+    try {
+      const doc = await fetchDocumentForUser(raw, ctx);
+      resolved.push(doc.id);
+    } catch {
+      // ignore unresolved
+    }
+  }
+  return resolved;
+};
+
+async function queryCitationGraphTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const focusRaw = normalizeDocIdsArg(call.args.focusDocIds);
+  if (focusRaw.length === 0) throw new Error('focusDocIds es requerido (array de IDs o nombres)');
+  const depth = clamp(typeof call.args.depth === 'number' ? call.args.depth : 1, 1, 3);
+  const kinds = normalizeKindsArg(call.args.kinds);
+  const focus = await resolveDocIdsForCtx(focusRaw, ctx);
+  if (focus.length === 0) throw new Error('Ningún focusDocId pudo resolverse a un documento del workspace.');
+
+  const subgraph = await expandSubgraph({
+    workspaceId: ctx.workspaceId,
+    uid: ctx.uid,
+    focusDocIds: focus,
+    depth,
+    ...(kinds ? { kinds } : {})
+  });
+
+  const summary = `Subgrafo: ${subgraph.nodes.length} nodo(s), ${subgraph.edges.length} arista(s) (depth=${depth}${kinds ? `, kinds=${kinds.join(',')}` : ''})${subgraph.truncated ? ' [truncado por hard cap]' : ''}.`;
+  return ok(call, summary, {
+    nodes: subgraph.nodes,
+    edges: subgraph.edges,
+    focus: subgraph.focus,
+    depth: subgraph.depth,
+    truncated: subgraph.truncated
+  });
+}
+
+const lexicalScore = (haystack: string, queryTokens: string[]): number => {
+  if (queryTokens.length === 0) return 0;
+  const normalized = haystack.toLowerCase();
+  let hits = 0;
+  let effective = 0;
+  for (const token of queryTokens) {
+    if (token.length < 2) continue;
+    effective += 1;
+    if (normalized.includes(token)) hits += 1;
+  }
+  return effective === 0 ? 0 : hits / effective;
+};
+
+async function findRelatedViaGraphTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const query = String(call.args.query || '').trim();
+  if (!query) throw new Error('query es requerido');
+  const limit = clamp(typeof call.args.limit === 'number' ? call.args.limit : 15, 1, 50);
+  const seedRaw = typeof call.args.seedDocId === 'string' && call.args.seedDocId.trim().length > 0
+    ? call.args.seedDocId.trim()
+    : null;
+
+  const metaIndex = await loadWorkspaceDocMetaIndex(ctx.workspaceId, ctx.uid);
+  const queryTokens = query.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
+
+  const lexicalCandidates: Array<{ docId: string; name: string; score: number }> = [];
+  for (const [docId, meta] of metaIndex.entries()) {
+    if (meta.type === DocumentType.Folder) continue;
+    const haystack = `${meta.name} ${meta.folder ?? ''}`;
+    const score = lexicalScore(haystack, queryTokens);
+    if (score > 0) lexicalCandidates.push({ docId, name: meta.name, score });
+  }
+  lexicalCandidates.sort((a, b) => b.score - a.score);
+
+  const lexicalSeeds = lexicalCandidates.slice(0, 10).map((c) => c.docId);
+  let seedFromArg: string | null = null;
+  if (seedRaw) {
+    try {
+      const doc = await fetchDocumentForUser(seedRaw, ctx);
+      seedFromArg = doc.id;
+    } catch {
+      seedFromArg = null;
+    }
+  }
+  const seeds = Array.from(new Set([
+    ...(seedFromArg ? [seedFromArg] : []),
+    ...lexicalSeeds
+  ]));
+
+  let graphNodes: Array<{ docId: string; depth: number }> = [];
+  if (seeds.length > 0) {
+    const subgraph = await expandSubgraph({
+      workspaceId: ctx.workspaceId,
+      uid: ctx.uid,
+      focusDocIds: seeds,
+      depth: 2,
+      docMetaIndex: metaIndex
+    });
+    graphNodes = subgraph.nodes.map((n) => ({ docId: n.docId, depth: n.depth }));
+  }
+  const graphDepthByDoc = new Map<string, number>();
+  for (const n of graphNodes) {
+    const prev = graphDepthByDoc.get(n.docId);
+    if (prev === undefined || n.depth < prev) graphDepthByDoc.set(n.docId, n.depth);
+  }
+
+  const lexicalMap = new Map<string, number>();
+  for (const c of lexicalCandidates) lexicalMap.set(c.docId, c.score);
+
+  const allDocIds = new Set<string>([...lexicalMap.keys(), ...graphDepthByDoc.keys()]);
+  const scored: Array<{ docId: string; name: string; folder?: string | null; lexicalScore: number; graphDepth: number | null; combinedScore: number }> = [];
+  for (const docId of allDocIds) {
+    const meta = metaIndex.get(docId);
+    if (!meta) continue;
+    if (meta.type === DocumentType.Folder) continue;
+    const lex = lexicalMap.get(docId) ?? 0;
+    const depth = graphDepthByDoc.get(docId);
+    const graphBoost = depth === undefined ? 0 : 1 / (1 + depth);
+    const combined = lex * 0.6 + graphBoost * 0.4;
+    if (combined <= 0) continue;
+    scored.push({
+      docId,
+      name: meta.name,
+      folder: meta.folder ?? null,
+      lexicalScore: Number(lex.toFixed(3)),
+      graphDepth: depth ?? null,
+      combinedScore: Number(combined.toFixed(3))
+    });
+  }
+  scored.sort((a, b) => b.combinedScore - a.combinedScore);
+  const results = scored.slice(0, limit);
+
+  return ok(call, `Encontré ${results.length} doc(s) relevantes (lexical+grafo).`, {
+    query,
+    results,
+    seedDocIds: seeds,
+    totalCandidates: allDocIds.size
+  });
+}
+
+async function expandContextTool(call: AgentToolCall, ctx: AgentExecutionContext) {
+  const initialRaw = normalizeDocIdsArg(call.args.initialDocIds);
+  if (initialRaw.length === 0) throw new Error('initialDocIds es requerido');
+  const hops = clamp(typeof call.args.hops === 'number' ? call.args.hops : 1, 1, 2);
+  const initial = await resolveDocIdsForCtx(initialRaw, ctx);
+  if (initial.length === 0) throw new Error('Ningún initialDocId pudo resolverse.');
+
+  const subgraph = await expandSubgraph({
+    workspaceId: ctx.workspaceId,
+    uid: ctx.uid,
+    focusDocIds: initial,
+    depth: hops
+  });
+
+  const edgeWeightByDoc = new Map<string, number>();
+  for (const edge of subgraph.edges) {
+    const sourceIsInitial = initial.includes(edge.from);
+    const targetIsInitial = initial.includes(edge.to);
+    const otherDoc = sourceIsInitial ? edge.to : targetIsInitial ? edge.from : null;
+    if (!otherDoc || initial.includes(otherDoc)) continue;
+    edgeWeightByDoc.set(otherDoc, (edgeWeightByDoc.get(otherDoc) ?? 0) + edge.weight);
+  }
+
+  const enriched = subgraph.nodes
+    .filter((n) => !initial.includes(n.docId))
+    .map((n) => ({
+      docId: n.docId,
+      name: n.name,
+      folder: n.folder ?? null,
+      hopsFromInitial: n.depth,
+      incidentEdgeWeight: edgeWeightByDoc.get(n.docId) ?? 0
+    }))
+    .sort((a, b) => {
+      if (a.hopsFromInitial !== b.hopsFromInitial) return a.hopsFromInitial - b.hopsFromInitial;
+      return b.incidentEdgeWeight - a.incidentEdgeWeight;
+    });
+
+  void containsQueryTokens;
+  return ok(call, `Contexto expandido: ${enriched.length} doc(s) conectado(s) en hasta ${hops} salto(s).`, {
+    initialDocIds: initial,
+    hops,
+    relatedDocs: enriched,
+    truncated: subgraph.truncated
+  });
+}
+
 export const INTELLIGENCE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   summarize_document: summarizeDocument,
   compare_documents: compareDocuments,
@@ -505,5 +710,8 @@ export const INTELLIGENCE_TOOL_HANDLERS: Record<string, ToolHandler> = {
   apply_snippet_to_document: applySnippetToDocumentTool,
   extract_text_from_pdf: extractTextFromPdf,
   lint_st_document: lintStDocument,
-  semantic_search_workspace: semanticSearchWorkspaceStub
+  semantic_search_workspace: semanticSearchWorkspaceStub,
+  query_citation_graph: queryCitationGraphTool,
+  find_related_via_graph: findRelatedViaGraphTool,
+  expand_context: expandContextTool
 };

@@ -176,6 +176,14 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       '`create_document`: Crea un documento nuevo.',
       'IMPORTANTE: el parámetro `documentId` acepta el nombre del documento o su ID.',
       'REGLA CRÍTICA: Cuando llames a una herramienta, incluye TODOS los parámetros requeridos. Nunca llames con parámetros vacíos.',
+      '',
+      '### Búsqueda eficiente via Citation Graph',
+      'Agora mantiene un grafo de citas inter-documents (wiki-links `[[doc]]`, markdown links a otros docs, conceptos semánticos compartidos, citas bibliográficas `[@Key]`). Úsalo para AHORRAR TOKENS en workspaces grandes:',
+      '1. Para preguntas sobre un doc específico: usa `query_citation_graph(focusDocIds=[<docId>], depth=2)` ANTES de search_documents. El grafo te dará los vecinos relevantes sin escanear el workspace completo.',
+      '2. Para preguntas amplias ("dame docs sobre X"): usa `find_related_via_graph(query="X")` que combina lexical + grafo en una sola pasada.',
+      '3. Antes de leer múltiples docs con `read_workspace_bundle`, llama `expand_context(initialDocIds=[<ids>], hops=1)` para incluir contexto vía citas.',
+      '4. Solo si las tres anteriores no devuelven suficiente, cae a `search_documents` con paginación cursor.',
+      'El grafo se actualiza automáticamente en cada write de documento; las aristas tipo `concept` se refrescan cuando cambia el estado semántico.',
       ''
     );
 

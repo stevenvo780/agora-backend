@@ -23,6 +23,7 @@ import {
 } from '@/lib/semantic/workspace-state';
 import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
+import { persistConceptEdgesForWorkspace } from '@/lib/citations/workspace-citations';
 
 const mockSemanticStates = new Map<string, SemanticWorkspaceState>();
 
@@ -117,6 +118,10 @@ export async function POST(req: NextRequest) {
       updatedBy: auth.uid,
       serverUpdatedAt: FieldValue.serverTimestamp()
     }));
+
+    void persistConceptEdgesForWorkspace({ workspaceId, uid: auth.uid }).catch((err) => {
+      console.warn('[semantic] concept-edge refresh failed:', getErrorMessage(err));
+    });
 
     return NextResponse.json({ state: mergedState });
   } catch (error: unknown) {

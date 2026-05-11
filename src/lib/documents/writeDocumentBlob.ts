@@ -4,6 +4,7 @@ import { computeSearchableContent } from '@/lib/search/searchable-content';
 import { emitPing, type SyncPing } from '@/lib/nas-events';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { getErrorMessage } from '@/lib/error-utils';
+import { parseAndPersistCitationsForDoc } from '@/lib/citations/workspace-citations';
 
 export type WriteDocumentBlobSource =
   | 'api-create'
@@ -99,6 +100,15 @@ export async function writeDocumentBlob(input: WriteDocumentBlobInput): Promise<
     });
   }
 
+  void parseAndPersistCitationsForDoc({
+    docId: input.docRef.id,
+    workspaceId: input.workspaceId,
+    uid: input.ownerId,
+    content: input.content
+  }).catch((err) => {
+    console.warn('[writeDocumentBlob] citations parse failed:', getErrorMessage(err));
+  });
+
   const computed = computeSearchableContent(input.content);
   return {
     size: put.size,
@@ -177,6 +187,15 @@ export async function createDocumentBlob(input: CreateDocumentBlobInput): Promis
       console.warn('[createDocumentBlob] emitPing failed:', getErrorMessage(err));
     });
   }
+
+  void parseAndPersistCitationsForDoc({
+    docId: input.docRef.id,
+    workspaceId: input.workspaceId,
+    uid: input.ownerId,
+    content: input.content
+  }).catch((err) => {
+    console.warn('[createDocumentBlob] citations parse failed:', getErrorMessage(err));
+  });
 
   return {
     size: put.size,

@@ -1578,6 +1578,62 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     name: 'agent_dry_run_info',
     description: 'Devuelve si el contexto actual está en modo dry-run (tools destructivas no aplican cambios reales).',
     parameters: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'query_citation_graph',
+    description: 'Devuelve el subgrafo de documents conectados al focus por citas (wiki-links, markdown links, conceptos compartidos, bibliografía). Úsalo PRIMERO para preguntas sobre un doc específico antes de hacer search_documents exhaustivo: te ahorra tokens en workspaces grandes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        focusDocIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'IDs (o nombres) de documents desde los que expandir.'
+        },
+        depth: {
+          type: 'number',
+          description: 'Profundidad BFS. 1-3, default 1.'
+        },
+        kinds: {
+          type: 'array',
+          items: { type: 'string', enum: ['wiki', 'link', 'concept', 'bib'] },
+          description: 'Filtra por tipos de cita.'
+        }
+      },
+      required: ['focusDocIds'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'find_related_via_graph',
+    description: 'Búsqueda híbrida: combina search lexical con expansión via citation graph. Útil para "docs relacionados con X tema" — devuelve docs ordenados por (graph_distance + lexical_match).',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Texto de búsqueda.' },
+        seedDocId: { type: 'string', description: 'Doc opcional usado como punto de partida del grafo.' },
+        limit: { type: 'number', description: 'Máximo de resultados, default 15, máx 50.' }
+      },
+      required: ['query'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'expand_context',
+    description: 'Dado uno o más docs iniciales, devuelve docs conectados via citas que enriquecen el contexto. Llámalo ANTES de read_workspace_bundle para que el bundle incluya el contexto relacionado por grafo sin escanear el workspace completo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        initialDocIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'IDs de documents iniciales.'
+        },
+        hops: { type: 'number', description: 'Saltos a expandir. 1-2, default 1.' }
+      },
+      required: ['initialDocIds'],
+      additionalProperties: false
+    }
   }
 ];
 
