@@ -1508,14 +1508,28 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     }
   },
   {
-    name: 'spawn_subagent',
-    description: 'Declara una subtarea independiente con un prompt explícito y scope acotado (read-only|workspace|full). HOY el spawn real está pendiente — la tool devuelve el contrato registrado para que orquestes la subtarea inline (con agent_plan_set + ejecutar pasos). Úsala cuando: (a) hay una tarea autocontenida que merecería su propio loop de pensamiento (ej. "audita los duplicados", "limpia conceptos huérfanos"); (b) quieres separar permisos de la conversación principal. NO uses para acciones triviales: para eso ejecuta la tool directamente.',
+    name: 'register_subtask',
+    description: 'Registra una subtarea con prompt explícito y scope acotado. IMPORTANTE: NO ejecuta en paralelo — la subtarea se procesa SECUENCIALMENTE dentro del mismo turno del agente. No spawnea un proceso aparte, no abre otro stream, no hay concurrencia real. Úsala para: (a) descomponer tareas complejas en pasos auditables ("audita duplicados", "limpia conceptos huérfanos"); (b) dejar registro del scope/permisos esperados de cada paso. NO la uses esperando que el sub-prompt corra en background — para eso no existe tool hoy.',
     parameters: {
       type: 'object',
       properties: {
         task: { type: 'string', description: 'Prompt explícito de la subtarea (≤500 chars).' },
-        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'], description: 'Permisos del subagent: read-only sólo lee; workspace puede editar docs/snippets/board; full incluye worker y git.' },
-        maxIterations: { type: 'number', description: 'Budget de iteraciones para el subagent (1..15, default 5).' }
+        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'], description: 'Permisos esperados de la subtarea: read-only sólo lee; workspace puede editar docs/snippets/board; full incluye worker y git. Es metadato — la ejecución sigue inline en el turno actual.' },
+        maxIterations: { type: 'number', description: 'Budget sugerido de iteraciones (1..15, default 5). Metadato informativo: no hay loop aislado.' }
+      },
+      required: ['task'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'spawn_subagent',
+    description: 'DEPRECATED — alias de `register_subtask`. El nombre era engañoso: no spawnea ejecución paralela, registra una subtarea que se procesa inline en el mismo turno. Usa `register_subtask` directamente. Este alias se mantiene por compatibilidad y será removido en una versión futura.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Prompt explícito de la subtarea (≤500 chars).' },
+        scope: { type: 'string', enum: ['read-only', 'workspace', 'full'], description: 'Permisos esperados (metadato).' },
+        maxIterations: { type: 'number', description: 'Budget sugerido de iteraciones (1..15, default 5).' }
       },
       required: ['task'],
       additionalProperties: false

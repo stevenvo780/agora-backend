@@ -324,6 +324,7 @@ const UI_EXTENDED_TOOLS = new Set([
   'agent_recall_memory',
   'agent_list_memories',
   'agent_forget',
+  'register_subtask',
   'spawn_subagent',
   'agent_set_hooks',
   'agent_list_hooks',

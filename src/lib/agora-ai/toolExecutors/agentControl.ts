@@ -158,18 +158,25 @@ export function setCachedToolResult(call: AgentToolCall, ctx: AgentExecutionCont
   }
 }
 
-async function spawnSubagent(call: AgentToolCall, _ctx: AgentExecutionContext) {
+async function registerSubtask(call: AgentToolCall, _ctx: AgentExecutionContext) {
   const task = String(call.args.task || '').trim();
   const scope = String(call.args.scope || 'read-only').trim();
   const maxIterations = clamp(typeof call.args.maxIterations === 'number' ? call.args.maxIterations : 5, 1, 15);
   if (!task) throw new Error('task es requerido');
   if (!['read-only', 'workspace', 'full'].includes(scope)) throw new Error('scope debe ser read-only|workspace|full');
-  // Stub honesto: la spawn de subagentes reales requiere otra invocación al
-  // provider con un budget separado. Hoy devolvemos contrato + sugerencia.
-  return ok(call, `Subagent task "${task.slice(0, 60)}" (scope=${scope}, maxIter=${maxIterations}) pendiente — el provider del agente principal debe re-invocarse con un context limitado. Por ahora, ejecuta los pasos en línea con plan_set/plan_update.`, {
+  const deprecatedAlias = call.name === 'spawn_subagent';
+  if (deprecatedAlias) {
+    console.warn('[agora-ai] tool deprecated: spawn_subagent — usar register_subtask (mismo comportamiento, nombre claro).');
+  }
+  // Esta tool NO spawnea ejecución paralela: registra metadata de la subtarea
+  // para que el agente la procese secuencialmente inline. El paralelismo real
+  // (otro stream con context aislado) es roadmap, no está implementado.
+  return ok(call, `Subtarea registrada: "${task.slice(0, 60)}" (scope=${scope}, maxIter=${maxIterations}). Procesála inline en este mismo turno — no hay loop aislado.`, {
     task, scope, maxIterations,
-    notImplementedFully: true,
-    suggestion: 'usa agent_plan_set + ejecutar pasos con tu propio loop; cuando se implemente real spawn, esta tool re-invocará al provider con context aislado.'
+    executionMode: 'inline-sequential',
+    parallelism: false,
+    deprecatedAlias,
+    suggestion: 'usa agent_plan_set + ejecutar pasos en este turno; para concurrencia entre tool calls, llamálos en la misma vuelta (paralelismo=4).'
   });
 }
 
@@ -265,7 +272,8 @@ export const AGENT_CONTROL_TOOL_HANDLERS: Record<string, ToolHandler> = {
   agent_recall_memory: agentRecallMemory,
   agent_list_memories: agentListMemories,
   agent_forget: agentForget,
-  spawn_subagent: spawnSubagent,
+  register_subtask: registerSubtask,
+  spawn_subagent: registerSubtask,
   agent_set_hooks: agentSetHooks,
   agent_list_hooks: agentListHooks,
   agent_save_turn_snapshot: agentSaveTurnSnapshot,
