@@ -15,9 +15,6 @@ import {
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
-// loadSemanticState and saveSemanticState are in shared.ts but semantic-specific
-// We re-import from shared where needed, and define semantic-only helpers here
-
 async function loadSemanticState(ctx: AgentExecutionContext): Promise<SemanticWorkspaceState> {
   await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
   const storageId = resolveSemanticDocId(ctx.workspaceId, ctx.uid);

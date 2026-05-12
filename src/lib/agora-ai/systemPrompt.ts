@@ -174,7 +174,6 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
-    // Semantic / Glossary guidance
     base.push(
       '### Panel semántico (glosario de conceptos)',
       'Tienes CRUD completo sobre el glosario:',
@@ -191,7 +190,6 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
-    // Board / Kanban guidance
     base.push(
       '### Tablero Kanban',
       'Columnas por defecto: "Por hacer", "En progreso", "Hecho".',
@@ -201,7 +199,6 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
-    // Document tools guidance
     base.push(
       '### Documentos',
       '`list_documents`: Lista los documentos del workspace (hasta 100 por defecto, 500 máx via limit). Si page.hasMore=true, llama de nuevo con cursor=page.nextCursor para la siguiente página.',
@@ -224,7 +221,6 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
-    // Snippet tools guidance
     base.push(
       '### Snippets',
       '`list_snippets`: Lista snippets. `create_snippet`: Crea uno nuevo con `title` y `markdown`.',
@@ -232,7 +228,6 @@ export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, 
       ''
     );
 
-    // ST / Logic tools guidance
     base.push(
       '### Lógica formal (ST)',
       'Si el usuario pregunta algo de lógica, validez, contradicción o silogismo: usa `check_logic` con el texto del usuario.',
