@@ -2,14 +2,31 @@
  * Rate limiting fino + abuse prevention para el agente IA.
  *
  * Capas:
- *  1. Cap diario de tokens por user (Firestore, persiste cross-instance).
+ *  1. Cap diario de tokens por user **y por proveedor** (Firestore, persiste
+ *     cross-instance). Cada proveedor tiene su propio budget configurable —
+ *     justicia: DeepSeek (~$0.14/MTok) tolera caps mucho mayores que GPT-4o
+ *     (~$2.50/MTok) sin romper la economía.
  *  2. Cap horario de mensajes por user (in-memory, sliding window).
  *  3. Bloqueo automático si user acumula N×429 en ventana corta.
  *  4. Señal estructurada de abuso (Cloud Logging — log-based metric futura).
  *
- * Firestore schema:
+ * Firestore schema (v2, con `byProvider`):
  *   users/{uid}/agentUsage/daily-{YYYY-MM-DD}
- *     { promptTokens, completionTokens, requestCount, lastResetAt, expiresAt }
+ *     {
+ *       promptTokens, completionTokens, requestCount,         // totales agregados
+ *       byProvider: {
+ *         deepseek: { promptTokens, completionTokens },
+ *         openai:   { promptTokens, completionTokens },
+ *         anthropic:{ promptTokens, completionTokens },
+ *         google:   { promptTokens, completionTokens },
+ *         custom:   { promptTokens, completionTokens },
+ *       },
+ *       lastResetAt, expiresAt
+ *     }
+ *
+ * Migración: los docs viejos (sin `byProvider`) se tratan como si todos los
+ * sub-contadores fueran 0. El primer call post-deploy escribe `byProvider`;
+ * los totales globales siguen sumando sin interrupción. No requiere backfill.
  *
  *   `expiresAt` (Timestamp) habilita TTL automático de Firestore: docs >7d
  *   se borran sin job manual. El TTL se configura en consola sobre el field
@@ -22,7 +39,40 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 
-const DEFAULT_DAILY_TOKEN_BUDGET = 100_000;
+// Identificadores canónicos de proveedor para el budget. `gemini` se
+// normaliza a `google` para alinear con la nomenclatura de billing.
+export const BUDGET_PROVIDER_KEYS = ['deepseek', 'openai', 'anthropic', 'google', 'custom'] as const;
+export type BudgetProviderKey = typeof BUDGET_PROVIDER_KEYS[number];
+
+const PROVIDER_ALIASES: Record<string, BudgetProviderKey> = {
+  deepseek: 'deepseek',
+  openai: 'openai',
+  anthropic: 'anthropic',
+  google: 'google',
+  gemini: 'google',
+  custom: 'custom',
+  'agora-gateway': 'custom'
+};
+
+/**
+ * Normaliza un identificador de proveedor (de cualquier origen: body, modelo,
+ * AgentSecretProvider, etc.) al key canónico de budget. Si no matchea,
+ * devuelve `null` y el caller debe usar el fallback global.
+ */
+export function normalizeProvider(provider: string | null | undefined): BudgetProviderKey | null {
+  if (!provider) return null;
+  const key = provider.toLowerCase().trim();
+  return PROVIDER_ALIASES[key] ?? null;
+}
+
+const DEFAULT_BUDGETS: Record<BudgetProviderKey, number> = {
+  deepseek: 2_000_000,
+  openai: 200_000,
+  anthropic: 200_000,
+  google: 500_000,
+  custom: 100_000
+};
+const DEFAULT_FALLBACK_BUDGET = 1_000_000;
 const DEFAULT_HOURLY_MESSAGE_CAP = 100;
 const HOUR_MS = 60 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
@@ -30,20 +80,45 @@ const ABUSE_THRESHOLD_429 = 5;
 const USAGE_DOC_TTL_DAYS = 7;
 const LRU_MAX_USERS = 5_000;
 
-function readDailyBudget(): number {
-  const raw = (process.env.AGORA_AI_DAILY_TOKEN_BUDGET ?? '').trim();
-  if (!raw) return DEFAULT_DAILY_TOKEN_BUDGET;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_DAILY_TOKEN_BUDGET;
+const ENV_VARS_BY_PROVIDER: Record<BudgetProviderKey, string> = {
+  deepseek: 'AGORA_AI_BUDGET_DEEPSEEK',
+  openai: 'AGORA_AI_BUDGET_OPENAI',
+  anthropic: 'AGORA_AI_BUDGET_ANTHROPIC',
+  google: 'AGORA_AI_BUDGET_GOOGLE',
+  custom: 'AGORA_AI_BUDGET_CUSTOM'
+};
+
+function readPositiveInt(raw: string | undefined, fallback: number): number {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return fallback;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.floor(n);
 }
 
+function readFallbackBudget(): number {
+  return readPositiveInt(process.env.AGORA_AI_DAILY_TOKEN_BUDGET, DEFAULT_FALLBACK_BUDGET);
+}
+
+function readProviderBudget(key: BudgetProviderKey): number {
+  return readPositiveInt(process.env[ENV_VARS_BY_PROVIDER[key]], DEFAULT_BUDGETS[key]);
+}
+
+/**
+ * Resuelve el budget aplicable: si el provider matchea un key canónico, usa
+ * su env específico; si no, fallback global.
+ */
+export function resolveBudgetFor(provider: string | null | undefined): {
+  budget: number;
+  providerKey: BudgetProviderKey | null;
+} {
+  const key = normalizeProvider(provider);
+  if (key === null) return { budget: readFallbackBudget(), providerKey: null };
+  return { budget: readProviderBudget(key), providerKey: key };
+}
+
 function readHourlyCap(): number {
-  const raw = (process.env.AGORA_AI_HOURLY_MESSAGE_CAP ?? '').trim();
-  if (!raw) return DEFAULT_HOURLY_MESSAGE_CAP;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_HOURLY_MESSAGE_CAP;
-  return Math.floor(n);
+  return readPositiveInt(process.env.AGORA_AI_HOURLY_MESSAGE_CAP, DEFAULT_HOURLY_MESSAGE_CAP);
 }
 
 function dayKey(now: number): string {
@@ -89,53 +164,91 @@ export interface DailyBudgetCheckOk {
   ok: true;
   used: number;
   budget: number;
+  provider: BudgetProviderKey | null;
 }
 export interface DailyBudgetCheckBlocked {
   ok: false;
   reason: 'daily-token-budget';
   used: number;
   budget: number;
+  provider: BudgetProviderKey | null;
   retryAfterMs: number;
 }
 export type DailyBudgetCheck = DailyBudgetCheckOk | DailyBudgetCheckBlocked;
 
 /**
- * Lee el doc del día y bloquea si el total ya alcanzó el budget configurado.
+ * Extrae el contador de tokens (prompt + completion) del sub-doc del provider.
+ * Si el doc viejo no tiene `byProvider`, devuelve 0 — es decir, los counters
+ * por-provider arrancan en cero al primer call post-deploy, aunque el total
+ * agregado refleje gasto previo. Es intencional: con el cap único anterior no
+ * se podía atribuir el consumo por provider, así que tratamos esa sombra como
+ * "consumo sin proveedor identificable" que no penaliza ningún cap específico.
+ */
+function readProviderUsed(data: Record<string, unknown> | null, providerKey: BudgetProviderKey | null): number {
+  if (!data) return 0;
+  if (providerKey === null) {
+    // Fallback: comparamos contra el total agregado del doc.
+    const pt = Number(data.promptTokens ?? 0);
+    const ct = Number(data.completionTokens ?? 0);
+    return (Number.isFinite(pt) ? pt : 0) + (Number.isFinite(ct) ? ct : 0);
+  }
+  const byProvider = data.byProvider;
+  if (!byProvider || typeof byProvider !== 'object') return 0;
+  const sub = (byProvider as Record<string, unknown>)[providerKey];
+  if (!sub || typeof sub !== 'object') return 0;
+  const subRec = sub as Record<string, unknown>;
+  const pt = Number(subRec.promptTokens ?? 0);
+  const ct = Number(subRec.completionTokens ?? 0);
+  return (Number.isFinite(pt) ? pt : 0) + (Number.isFinite(ct) ? ct : 0);
+}
+
+/**
+ * Lee el doc del día y bloquea si el total del *proveedor* alcanzó su budget.
+ * Si el provider no matchea un key canónico, se compara contra el total agregado
+ * con el budget de fallback global (`AGORA_AI_DAILY_TOKEN_BUDGET`).
+ *
  * Si Firestore falla (network/permissions) deja pasar — preferimos disponibilidad
  * sobre cap estricto (el cap horario y el rate-limit IP siguen activos).
  */
-export async function checkDailyBudget(uid: string, nowMs: number = Date.now()): Promise<DailyBudgetCheck> {
-  const budget = readDailyBudget();
+export async function checkDailyBudget(
+  uid: string,
+  provider?: string | null,
+  nowMs: number = Date.now()
+): Promise<DailyBudgetCheck> {
+  const { budget, providerKey } = resolveBudgetFor(provider);
   try {
     const snap = await usageDocRef(uid, nowMs).get();
-    const data = snap.exists ? snap.data() : null;
-    const promptTokens = Number(data?.promptTokens ?? 0);
-    const completionTokens = Number(data?.completionTokens ?? 0);
-    const used = (Number.isFinite(promptTokens) ? promptTokens : 0)
-      + (Number.isFinite(completionTokens) ? completionTokens : 0);
+    const data = snap.exists ? (snap.data() ?? null) : null;
+    const used = readProviderUsed(data ?? null, providerKey);
     if (used >= budget) {
       return {
         ok: false,
         reason: 'daily-token-budget',
         used,
         budget,
+        provider: providerKey,
         retryAfterMs: msUntilMidnightUtc(nowMs)
       };
     }
-    return { ok: true, used, budget };
+    return { ok: true, used, budget, provider: providerKey };
   } catch (error) {
     console.warn('[agora-ai/usage] checkDailyBudget fallback:', error instanceof Error ? error.message : error);
-    return { ok: true, used: 0, budget };
+    return { ok: true, used: 0, budget, provider: providerKey };
   }
 }
 
 /**
- * Suma tokens consumidos al doc del día. Idempotente vía FieldValue.increment
+ * Suma tokens consumidos al doc del día. Actualiza tanto `byProvider[key]` como
+ * los totales globales (retro-compat). Idempotente vía FieldValue.increment
  * (no race entre instancias). Falla silenciosa: la observabilidad la cubre el
  * recordAbuseSignal con los tokens reales del run.
+ *
+ * Si el provider no matchea un key canónico, sólo actualiza los totales
+ * globales — el bucket `byProvider` queda intacto.
  */
 export async function recordUsage(
   uid: string,
+  provider: string | null | undefined,
   promptTokens: number,
   completionTokens: number,
   nowMs: number = Date.now()
@@ -143,16 +256,22 @@ export async function recordUsage(
   const pt = Math.max(0, Math.floor(Number(promptTokens) || 0));
   const ct = Math.max(0, Math.floor(Number(completionTokens) || 0));
   if (pt === 0 && ct === 0) return;
+  const providerKey = normalizeProvider(provider);
   try {
     const ref = usageDocRef(uid, nowMs);
     const expiresAtMs = nowMs + USAGE_DOC_TTL_DAYS * 24 * HOUR_MS;
-    await ref.set({
+    const payload: Record<string, unknown> = {
       promptTokens: FieldValue.increment(pt),
       completionTokens: FieldValue.increment(ct),
       requestCount: FieldValue.increment(1),
       lastResetAt: dayKey(nowMs),
       expiresAt: Timestamp.fromMillis(expiresAtMs)
-    }, { merge: true });
+    };
+    if (providerKey !== null) {
+      payload[`byProvider.${providerKey}.promptTokens`] = FieldValue.increment(pt);
+      payload[`byProvider.${providerKey}.completionTokens`] = FieldValue.increment(ct);
+    }
+    await ref.set(payload, { merge: true });
   } catch (error) {
     console.warn('[agora-ai/usage] recordUsage error:', error instanceof Error ? error.message : error);
   }
@@ -277,13 +396,18 @@ export const __constantsForTest = {
   TEN_MIN_MS,
   ABUSE_THRESHOLD_429,
   USAGE_DOC_TTL_DAYS,
-  DEFAULT_DAILY_TOKEN_BUDGET,
+  DEFAULT_BUDGETS,
+  DEFAULT_FALLBACK_BUDGET,
   DEFAULT_HOURLY_MESSAGE_CAP
 };
 
 export const __internalsForTest = {
   msUntilMidnightUtc,
   dayKey,
-  readDailyBudget,
-  readHourlyCap
+  readFallbackBudget,
+  readProviderBudget,
+  readHourlyCap,
+  normalizeProvider,
+  resolveBudgetFor,
+  readProviderUsed
 };

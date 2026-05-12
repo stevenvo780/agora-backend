@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
     reason: 'abuse-block' | 'hourly-message-cap' | 'daily-token-budget',
     retryAfterMs: number,
     extra: Record<string, unknown> = {}
-  ) => {
+  ): Response => {
     recordAbuseSignal(auth.uid);
     logAbuseSignal({
       uid: auth.uid,
@@ -186,14 +186,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const daily = await checkDailyBudget(auth.uid);
+  const daily = await checkDailyBudget(auth.uid, provider);
   if (!daily.ok) {
     return reply429(
       'Daily token budget exceeded',
       Math.ceil(daily.retryAfterMs / 1000),
       'daily-token-budget',
       daily.retryAfterMs,
-      { used: daily.used, budget: daily.budget }
+      { used: daily.used, budget: daily.budget, provider: daily.provider }
     );
   }
 
@@ -347,7 +347,7 @@ export async function POST(request: NextRequest) {
           const completionTokens = Number(agentRun.usage?.completionTokens ?? 0) || 0;
           const toolCallCount = agentRun.steps.filter((s) => s.type === 'tool_call').length;
           if (promptTokens > 0 || completionTokens > 0) {
-            recordUsage(auth.uid, promptTokens, completionTokens).catch((error) => {
+            recordUsage(auth.uid, provider, promptTokens, completionTokens).catch((error) => {
               console.warn('[agora-ai/stream] recordUsage error:', error instanceof Error ? error.message : error);
             });
           }
