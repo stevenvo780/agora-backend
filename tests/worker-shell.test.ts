@@ -90,6 +90,8 @@ test('shellQuote escapa comillas simples correctamente', () => {
 const ALLOWED_AGENT_BINARIES = new Set([
   'ls', 'pwd', 'cat', 'echo', 'head', 'tail', 'wc', 'grep', 'find', 'sort', 'uniq',
   'cut', 'awk', 'sed', 'tr', 'tee', 'diff', 'stat', 'file', 'date',
+  // Bug I-1: mirror de agent-command-policy.mjs — mantener sincronizado.
+  'whoami', 'id', 'hostname', 'uname', 'uptime', 'df', 'free', 'env',
   'mkdir', 'touch', 'cp', 'mv', 'rm', 'ln',
   'base64',
   'git', 'node', 'npm', 'pnpm', 'npx', 'yarn',

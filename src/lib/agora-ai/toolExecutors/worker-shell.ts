@@ -20,6 +20,8 @@ export const DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
 export const SAFE_READ_ONLY_BINARIES = new Set([
   'ls', 'pwd', 'cat', 'echo', 'head', 'tail', 'wc', 'grep', 'find', 'sort',
   'uniq', 'cut', 'awk', 'sed', 'tr', 'diff', 'stat', 'file', 'date',
+  // Bug I-1: read-only de entorno — no piden confirmación innecesaria.
+  'whoami', 'id', 'hostname', 'uname', 'uptime', 'df', 'free', 'env',
   'tree', 'jq', 'true', 'false'
 ]);
 
