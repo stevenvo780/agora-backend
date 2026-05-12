@@ -34,6 +34,7 @@ app.use(cors({
   allowedHeaders: [
     'Content-Type',
     'Authorization',
+    'X-Agent-Key',
     'X-Worker-Token',
     'X-Worker-Ts',
     'X-Worker-Sig',

@@ -314,7 +314,9 @@ export async function POST(request: NextRequest) {
             },
             callbacks: {
               onStatus: async (status) => send({ type: 'status', status }),
-              onStep: async (step) => send({ type: 'step', step })
+              onStep: async (step) => send({ type: 'step', step }),
+              onContextTruncated: async (removedCount, summary) =>
+                send({ type: 'context-truncated', removedCount, summary })
             },
             userInstructions
           });

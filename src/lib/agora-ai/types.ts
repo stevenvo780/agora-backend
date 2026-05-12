@@ -197,6 +197,7 @@ export type AgentStreamEvent =
   | { type: 'chat-created'; chatId: string }
   | { type: 'status'; status: string }
   | { type: 'step'; step: AgentTraceStep }
+  | { type: 'context-truncated'; removedCount: number; summary: string }
   | { type: 'complete'; reply: string; agentRun: AgentRun; chatId?: string }
   | { type: 'error'; error: string };
 

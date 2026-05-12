@@ -78,6 +78,7 @@ function accumulateUsage(
 interface ProviderRunCallbacks {
   onStep?: (step: AgentTraceStep) => void | Promise<void>;
   onStatus?: (status: string) => void | Promise<void>;
+  onContextTruncated?: (removedCount: number, summary: string) => void | Promise<void>;
 }
 
 interface ProviderRunOptions {
@@ -252,6 +253,9 @@ function createEmitters(steps: AgentTraceStep[], callbacks?: ProviderRunCallback
     emitStep: async (step: AgentTraceStep) => {
       steps.push(step);
       await callbacks?.onStep?.(step);
+    },
+    emitContextTruncated: async (removedCount: number, summary: string) => {
+      await callbacks?.onContextTruncated?.(removedCount, summary);
     }
   };
 }
@@ -389,7 +393,8 @@ async function executeToolsParallel(
 
 async function compactInputMessages(
   options: ProviderRunOptions,
-  emitStatus: (status: string) => Promise<void>
+  emitStatus: (status: string) => Promise<void>,
+  onContextTruncated?: (removedCount: number, summary: string) => Promise<void>
 ): Promise<typeof options.messages> {
   try {
     const summaryClient = createSummaryClient({
@@ -401,13 +406,17 @@ async function compactInputMessages(
       options.provider,
       options.model,
       options.messages,
-      summaryClient
+      summaryClient,
+      { threshold: 0.70 }
     );
     if (result.compacted) {
       await emitStatus(
         `Conversación compactada: ${result.removedCount} mensajes resumidos `
         + `(uso ${(result.decision.ratio * 100).toFixed(0)}% del contexto).`
       );
+      if (onContextTruncated && result.removedCount) {
+        await onContextTruncated(result.removedCount, result.summary ?? '');
+      }
     }
     return result.messages;
   } catch (err) {
@@ -422,7 +431,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     : OPENAI_COMPATIBLE_PROVIDERS.openai;
   const steps: AgentTraceStep[] = [];
   const rollback: AgentRollbackAction[] = [];
-  const { emitStatus, emitStep } = createEmitters(steps, options.callbacks);
+  const { emitStatus, emitStep, emitContextTruncated } = createEmitters(steps, options.callbacks);
   const systemPrompt = buildAgoraSystemPrompt({
     mode: options.mode,
     contextPrompt: options.contextPrompt,
@@ -433,7 +442,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     dryRun: options.executionContext.dryRun
   });
 
-  const inputMessages = await compactInputMessages(options, emitStatus);
+  const inputMessages = await compactInputMessages(options, emitStatus, emitContextTruncated);
   const messages: Array<Record<string, unknown>> = [
     { role: 'system', content: systemPrompt },
     ...inputMessages
@@ -605,7 +614,7 @@ const supportsNativeThinking = (model: string) =>
 async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   const steps: AgentTraceStep[] = [];
   const rollback: AgentRollbackAction[] = [];
-  const { emitStatus, emitStep } = createEmitters(steps, options.callbacks);
+  const { emitStatus, emitStep, emitContextTruncated } = createEmitters(steps, options.callbacks);
   const systemPrompt = buildAgoraSystemPrompt({
     mode: options.mode,
     contextPrompt: options.contextPrompt,
@@ -620,7 +629,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   // Sonnet/Opus support up to 64K output; cap at 16K (thinking budget + visible headroom).
   const maxTokens = useNativeThinking ? 16000 : 8192;
 
-  const inputMessages = await compactInputMessages(options, emitStatus);
+  const inputMessages = await compactInputMessages(options, emitStatus, emitContextTruncated);
   const messages: Array<{ role: 'user' | 'assistant'; content: string | AnthropicBlock[] }> =
     inputMessages
       .filter(m => m.role !== 'system')
@@ -803,7 +812,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
 async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   const steps: AgentTraceStep[] = [];
   const rollback: AgentRollbackAction[] = [];
-  const { emitStatus, emitStep } = createEmitters(steps, options.callbacks);
+  const { emitStatus, emitStep, emitContextTruncated } = createEmitters(steps, options.callbacks);
   const systemPrompt = buildAgoraSystemPrompt({
     mode: options.mode,
     contextPrompt: options.contextPrompt,
@@ -814,7 +823,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
     dryRun: options.executionContext.dryRun
   });
 
-  const inputMessages = await compactInputMessages(options, emitStatus);
+  const inputMessages = await compactInputMessages(options, emitStatus, emitContextTruncated);
   const contents: Array<{ role: 'user' | 'model'; parts: Array<Record<string, unknown>> }> =
     inputMessages
       .filter(m => m.role !== 'system')
