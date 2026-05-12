@@ -3,6 +3,15 @@ import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/serve
 import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { runProviderConversation } from '@/lib/agora-ai/providerAdapters';
 import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
+import {
+  checkDailyBudget,
+  checkHourlyMessageCap,
+  checkAbuseBlock,
+  incrementMessageCount,
+  recordAbuseSignal,
+  recordUsage,
+  logAbuseSignal
+} from '@/lib/agora-ai/usageTracking';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import { getAgentHooksCached } from '@/lib/agora-ai/agent-hooks-cache';
 import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '@/lib/agora-ai/types';
@@ -123,17 +132,84 @@ export async function POST(request: NextRequest) {
 
   const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
 
+  // --- Abuse prevention / rate limiting fino ---------------------------------
+  // Orden: abuse-block (cooldown duro) → hourly cap (spam) → daily budget
+  // (cost). Cada 429 acumula señal; 5×429 en 10min → blocklist 10min.
+
+  const reply429 = (
+    body: string,
+    retryAfterSec: number,
+    reason: 'abuse-block' | 'hourly-message-cap' | 'daily-token-budget',
+    retryAfterMs: number,
+    extra: Record<string, unknown> = {}
+  ) => {
+    recordAbuseSignal(auth.uid);
+    logAbuseSignal({
+      uid: auth.uid,
+      workspaceId,
+      model: model || 'unknown',
+      toolCallCount: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      durationMs: 0,
+      status: reason === 'daily-token-budget'
+        ? 'budget-exceeded'
+        : reason === 'abuse-block' ? 'blocked' : 'rate-limited'
+    });
+    return new Response(JSON.stringify({ error: body, reason, retryAfter: retryAfterMs, ...extra }), {
+      status: 429,
+      headers: {
+        'Content-Type': 'application/json',
+        'Retry-After': String(Math.max(1, retryAfterSec))
+      }
+    });
+  };
+
+  const abuse = checkAbuseBlock(auth.uid);
+  if (!abuse.ok) {
+    return reply429(
+      'Usuario bloqueado temporalmente por exceso de rate-limits. Espera unos minutos.',
+      Math.ceil(abuse.retryAfterMs / 1000),
+      'abuse-block',
+      abuse.retryAfterMs
+    );
+  }
+
+  const hourly = checkHourlyMessageCap(auth.uid);
+  if (!hourly.ok) {
+    return reply429(
+      `Has superado el límite horario de mensajes al agente (${hourly.cap}/h). Intenta más tarde.`,
+      Math.ceil(hourly.retryAfterMs / 1000),
+      'hourly-message-cap',
+      hourly.retryAfterMs,
+      { used: hourly.used, cap: hourly.cap }
+    );
+  }
+
+  const daily = await checkDailyBudget(auth.uid);
+  if (!daily.ok) {
+    return reply429(
+      'Daily token budget exceeded',
+      Math.ceil(daily.retryAfterMs / 1000),
+      'daily-token-budget',
+      daily.retryAfterMs,
+      { used: daily.used, budget: daily.budget }
+    );
+  }
+
+  incrementMessageCount(auth.uid);
+
   const claim = claimAgoraAgentRequest(`${auth.uid}:${workspaceId}:${provider}:stream`, {
     minIntervalMs: 900,
     maxConcurrent: 2
   });
   if (!claim.ok) {
-    return new Response(`Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${Math.ceil(claim.retryAfterMs / 1000)}s.`, {
-      status: 429,
-      headers: {
-        'Retry-After': String(Math.ceil(claim.retryAfterMs / 1000))
-      }
-    });
+    return reply429(
+      `Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${Math.ceil(claim.retryAfterMs / 1000)}s.`,
+      Math.ceil(claim.retryAfterMs / 1000),
+      'abuse-block',
+      claim.retryAfterMs
+    );
   }
 
   const encoder = new TextEncoder();
@@ -177,6 +253,16 @@ export async function POST(request: NextRequest) {
             truncated: true
           },
           ...(activeChatId ? { chatId: activeChatId } : {})
+        });
+        logAbuseSignal({
+          uid: auth.uid,
+          workspaceId,
+          model: model || 'unknown',
+          toolCallCount: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          durationMs: Date.now() - startedAt,
+          status: 'truncated'
         });
         close();
       }, SOFT_BUDGET_MS);
@@ -255,12 +341,42 @@ export async function POST(request: NextRequest) {
             });
           }
           send({ type: 'complete', reply: agentRun.finalReply, agentRun, ...(activeChatId ? { chatId: activeChatId } : {}) });
+
+          // Contabilidad post-éxito: tokens consumidos + señal de abuso.
+          const promptTokens = Number(agentRun.usage?.promptTokens ?? 0) || 0;
+          const completionTokens = Number(agentRun.usage?.completionTokens ?? 0) || 0;
+          const toolCallCount = agentRun.steps.filter((s) => s.type === 'tool_call').length;
+          if (promptTokens > 0 || completionTokens > 0) {
+            recordUsage(auth.uid, promptTokens, completionTokens).catch((error) => {
+              console.warn('[agora-ai/stream] recordUsage error:', error instanceof Error ? error.message : error);
+            });
+          }
+          logAbuseSignal({
+            uid: auth.uid,
+            workspaceId,
+            model: model || DEFAULT_MODELS[provider],
+            toolCallCount,
+            promptTokens,
+            completionTokens,
+            durationMs: Date.now() - startedAt,
+            status: agentRun.truncated ? 'truncated' : 'ok'
+          });
           close();
         } catch (error) {
           clearTimeout(softTimeout);
           const message = error instanceof Error ? error.message : 'Unknown error';
           console.error('[agora-ai/stream]', message);
           send({ type: 'error', error: message });
+          logAbuseSignal({
+            uid: auth.uid,
+            workspaceId,
+            model: model || 'unknown',
+            toolCallCount: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            durationMs: Date.now() - startedAt,
+            status: 'error'
+          });
           close();
         }
       })();
