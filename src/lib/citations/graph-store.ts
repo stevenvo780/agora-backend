@@ -147,6 +147,14 @@ export interface ExpandSubgraphOptions {
  *
  * Para las entrantes hacemos una query collectionGroup filtrada por
  * `targetDocId`, restringida al workspace mediante el meta-index.
+ *
+ * Caso especial workspace-wide: cuando `focusDocIds.length > maxNodes / 2`
+ * (e.g. el route handler manda todos los docs del workspace), el BFS por
+ * niveles ya no aporta: cualquier doc que cita o es citado ya está en el
+ * foco. En ese modo escaneamos las edges con una sola query collectionGroup
+ * filtrada por `workspaceId`, restringimos contra `metaIndex` y aplicamos
+ * los caps al final. Eso evita el bug en el que el cap de nodos cortaba el
+ * BFS antes de leer ninguna cita.
  */
 export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<CitationSubgraph> {
   const { workspaceId, depth } = options;
@@ -160,19 +168,33 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
 
   const metaIndex = options.docMetaIndex ?? await loadWorkspaceDocMetaIndex(workspaceId, options.uid);
 
+  const focusSet = new Set<string>(focusDocIds);
+  const isWorkspaceWide = shouldUseWorkspaceWideScan(focusDocIds.length, maxNodes);
+
+  if (isWorkspaceWide) {
+    return scanWorkspaceWideSubgraph({
+      workspaceId,
+      focusDocIds,
+      metaIndex,
+      kindsFilter,
+      maxNodes,
+      normalizedDepth
+    });
+  }
+
   const nodesById = new Map<string, CitationGraphNode>();
   const visited = new Set<string>();
   const edgesOut: CitationGraphEdge[] = [];
   const edgeSeen = new Set<string>();
   let truncated = false;
 
-  const ensureNode = (docId: string, distance: number): void => {
+  const ensureNode = (docId: string, distance: number, force: boolean): void => {
     if (nodesById.has(docId)) {
       const node = nodesById.get(docId);
       if (node && distance < node.depth) node.depth = distance;
       return;
     }
-    if (nodesById.size >= maxNodes) {
+    if (!force && nodesById.size >= maxNodes) {
       truncated = true;
       return;
     }
@@ -196,31 +218,37 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
     });
   };
 
-  for (const id of focusDocIds) ensureNode(id, 0);
+  for (const id of focusDocIds) ensureNode(id, 0, true);
 
   let frontier: string[] = focusDocIds.slice();
-  for (let level = 0; level < normalizedDepth; level += 1) {
+  for (let level = 0; level <= normalizedDepth; level += 1) {
     if (frontier.length === 0) break;
     const nextFrontier: string[] = [];
+    const canExpand = level < normalizedDepth;
 
     for (const docId of frontier) {
       if (visited.has(docId)) continue;
       visited.add(docId);
-      if (nodesById.size >= maxNodes) {
-        truncated = true;
-        break;
-      }
+
       const outgoing = await readCitationsFromDoc(docId);
       for (const edge of outgoing) {
         if (kindsFilter && !kindsFilter.has(edge.kind)) continue;
-        if (!metaIndex.has(edge.targetDocId) && !nodesById.has(edge.targetDocId)) continue;
-        const key = `${docId}->${edge.targetDocId}:${edge.kind}`;
+        const targetId = edge.targetDocId;
+        const targetKnown = metaIndex.has(targetId) || nodesById.has(targetId);
+        if (!targetKnown) continue;
+        const targetIsFocal = focusSet.has(targetId);
+        const canAddTargetNode = nodesById.has(targetId) || targetIsFocal || (canExpand && nodesById.size < maxNodes);
+        if (!canAddTargetNode) {
+          truncated = true;
+          continue;
+        }
+        const key = `${docId}->${targetId}:${edge.kind}`;
         if (edgeSeen.has(key)) continue;
         if (edgesOut.length >= MAX_EDGES_HARD_CAP) { truncated = true; continue; }
         edgeSeen.add(key);
-        edgesOut.push({ from: docId, to: edge.targetDocId, kind: edge.kind, weight: edge.weight });
-        ensureNode(edge.targetDocId, level + 1);
-        if (!visited.has(edge.targetDocId)) nextFrontier.push(edge.targetDocId);
+        edgesOut.push({ from: docId, to: targetId, kind: edge.kind, weight: edge.weight });
+        ensureNode(targetId, level + 1, targetIsFocal);
+        if (canExpand && !visited.has(targetId)) nextFrontier.push(targetId);
       }
 
       try {
@@ -238,21 +266,27 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
           const sourceId = parentRef.id;
           if (sourceId === docId) continue;
           if (!metaIndex.has(sourceId)) continue;
+          const sourceIsFocal = focusSet.has(sourceId);
+          const canAddSourceNode = nodesById.has(sourceId) || sourceIsFocal || (canExpand && nodesById.size < maxNodes);
+          if (!canAddSourceNode) {
+            truncated = true;
+            continue;
+          }
           const key = `${sourceId}->${docId}:${kindRaw}`;
           if (edgeSeen.has(key)) continue;
           if (edgesOut.length >= MAX_EDGES_HARD_CAP) { truncated = true; continue; }
           edgeSeen.add(key);
           const weight = typeof data.weight === 'number' && Number.isFinite(data.weight) ? data.weight : 1;
           edgesOut.push({ from: sourceId, to: docId, kind: kindRaw, weight });
-          ensureNode(sourceId, level + 1);
-          if (!visited.has(sourceId)) nextFrontier.push(sourceId);
+          ensureNode(sourceId, level + 1, sourceIsFocal);
+          if (canExpand && !visited.has(sourceId)) nextFrontier.push(sourceId);
         }
       } catch (err) {
         console.warn('[expandSubgraph] collectionGroup incoming query failed:', err instanceof Error ? err.message : err);
       }
     }
 
-    frontier = nextFrontier;
+    frontier = canExpand ? nextFrontier : [];
   }
 
   return {
@@ -264,10 +298,158 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
   };
 }
 
+interface ScanWorkspaceWideOptions {
+  workspaceId: string;
+  focusDocIds: string[];
+  metaIndex: Map<string, DocMetaForGraph>;
+  kindsFilter: Set<CitationKind> | null;
+  maxNodes: number;
+  normalizedDepth: number;
+}
+
+/**
+ * Modo workspace-wide: una sola query collectionGroup paginada para barrer
+ * todas las citas del workspace y reconstruir el grafo en memoria. Mantiene
+ * los caps duros pero recortando por *menos conectados primero* (degree).
+ */
+async function scanWorkspaceWideSubgraph(opts: ScanWorkspaceWideOptions): Promise<CitationSubgraph> {
+  const { focusDocIds, metaIndex, kindsFilter, maxNodes, normalizedDepth } = opts;
+  const focusSet = new Set<string>(focusDocIds);
+
+  type RawEdge = { from: string; to: string; kind: CitationKind; weight: number };
+  const rawEdges: RawEdge[] = [];
+  let truncated = false;
+
+  const PAGE_SIZE = 500;
+  let lastDocRef: FirebaseFirestore.DocumentSnapshot | null = null;
+  let safety = 0;
+
+  while (safety < 200) {
+    safety += 1;
+    let q = adminDb.collectionGroup(CITATIONS_SUBCOLLECTION).limit(PAGE_SIZE);
+    if (lastDocRef) q = q.startAfter(lastDocRef);
+    let snap: FirebaseFirestore.QuerySnapshot;
+    try {
+      snap = await q.get();
+    } catch (err) {
+      console.warn('[scanWorkspaceWideSubgraph] collectionGroup scan failed:', err instanceof Error ? err.message : err);
+      break;
+    }
+    if (snap.empty) break;
+    for (const cit of snap.docs) {
+      const parentRef = cit.ref.parent.parent;
+      if (!parentRef) continue;
+      const sourceId = parentRef.id;
+      if (!focusSet.has(sourceId) && !metaIndex.has(sourceId)) continue;
+      const data = cit.data() as Record<string, unknown>;
+      const kindRaw = data.kind;
+      if (!isCitationKind(kindRaw)) continue;
+      if (kindsFilter && !kindsFilter.has(kindRaw)) continue;
+      const targetDocId = typeof data.targetDocId === 'string' ? data.targetDocId : '';
+      if (!targetDocId || targetDocId === sourceId) continue;
+      if (!focusSet.has(targetDocId) && !metaIndex.has(targetDocId)) continue;
+      const weight = typeof data.weight === 'number' && Number.isFinite(data.weight) ? data.weight : 1;
+      rawEdges.push({ from: sourceId, to: targetDocId, kind: kindRaw, weight });
+    }
+    const lastSnap = snap.docs[snap.docs.length - 1];
+    if (!lastSnap || snap.size < PAGE_SIZE) break;
+    lastDocRef = lastSnap;
+  }
+
+  const degree = new Map<string, number>();
+  const bumpDegree = (id: string) => degree.set(id, (degree.get(id) ?? 0) + 1);
+  const dedupKey = new Set<string>();
+  const uniqueEdges: RawEdge[] = [];
+  for (const e of rawEdges) {
+    const k = `${e.from}->${e.to}:${e.kind}`;
+    if (dedupKey.has(k)) continue;
+    dedupKey.add(k);
+    uniqueEdges.push(e);
+    bumpDegree(e.from);
+    bumpDegree(e.to);
+  }
+
+  const nodeIds = new Set<string>(focusDocIds);
+  for (const e of uniqueEdges) {
+    nodeIds.add(e.from);
+    nodeIds.add(e.to);
+  }
+
+  let finalNodeIds: Set<string>;
+  if (nodeIds.size <= maxNodes) {
+    finalNodeIds = nodeIds;
+  } else {
+    truncated = true;
+    const sorted = rankNodesForCap(Array.from(nodeIds), focusSet, degree);
+    finalNodeIds = new Set<string>(sorted.slice(0, maxNodes));
+  }
+
+  const filteredEdges: CitationGraphEdge[] = [];
+  for (const e of uniqueEdges) {
+    if (!finalNodeIds.has(e.from) || !finalNodeIds.has(e.to)) continue;
+    if (filteredEdges.length >= MAX_EDGES_HARD_CAP) { truncated = true; break; }
+    filteredEdges.push({ from: e.from, to: e.to, kind: e.kind, weight: e.weight });
+  }
+
+  const nodes: CitationGraphNode[] = [];
+  for (const id of finalNodeIds) {
+    const meta = metaIndex.get(id);
+    nodes.push(meta ? {
+      docId: id,
+      name: meta.name,
+      type: meta.type,
+      folder: meta.folder ?? null,
+      depth: focusSet.has(id) ? 0 : 1
+    } : {
+      docId: id,
+      name: id,
+      type: 'text',
+      folder: null,
+      depth: focusSet.has(id) ? 0 : 1
+    });
+  }
+
+  return {
+    nodes,
+    edges: filteredEdges,
+    focus: focusDocIds,
+    depth: normalizedDepth,
+    truncated
+  };
+}
+
 export const CITATION_GRAPH_HARD_CAPS = {
   maxNodes: MAX_NODES_HARD_CAP,
   maxEdges: MAX_EDGES_HARD_CAP,
   maxDepth: 5
 } as const;
+
+/**
+ * Helper puro extraído para test. Decide si una corrida de `expandSubgraph`
+ * usa la ruta workspace-wide (single collectionGroup scan) vs BFS por nivel.
+ * Bug fix: cuando el caller pasa todos los docs del workspace como foco y
+ * supera `maxNodes/2`, el BFS antes cortaba sin leer citas y devolvía
+ * `edges=0`. Ahora ese caso usa el scan.
+ */
+export const shouldUseWorkspaceWideScan = (focusCount: number, maxNodes: number): boolean =>
+  focusCount > Math.max(1, Math.floor(maxNodes / 2));
+
+/**
+ * Helper puro: ranking de nodos para podar workspace-wide cuando excede el
+ * cap. Focos primero, luego mayor grado.
+ */
+export const rankNodesForCap = (
+  nodeIds: ReadonlyArray<string>,
+  focusSet: ReadonlySet<string>,
+  degree: ReadonlyMap<string, number>
+): string[] =>
+  Array.from(nodeIds).sort((a, b) => {
+    const aFocal = focusSet.has(a) ? 1 : 0;
+    const bFocal = focusSet.has(b) ? 1 : 0;
+    if (aFocal !== bFocal) return bFocal - aFocal;
+    const aDeg = degree.get(a) ?? 0;
+    const bDeg = degree.get(b) ?? 0;
+    return bDeg - aDeg;
+  });
 
 export { CITATION_KINDS };
