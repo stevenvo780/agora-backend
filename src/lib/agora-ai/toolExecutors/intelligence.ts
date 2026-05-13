@@ -11,6 +11,7 @@ import {
 } from './shared';
 import { expandSubgraph, loadWorkspaceDocMetaIndex } from '@/lib/citations/graph-store';
 import { isCitationKind, type CitationKind } from '@/lib/citations/types';
+import { fuzzyResolveDocId, type ResolvedDocRef } from '@/lib/citations/resolveDoc';
 
 const FETCH_URL_MAX_BYTES_DEFAULT = 50_000;
 const FETCH_URL_MAX_BYTES_HARD = 200_000;
@@ -514,17 +515,41 @@ const normalizeDocIdsArg = (raw: unknown): string[] => {
   return out;
 };
 
-const resolveDocIdsForCtx = async (ids: string[], ctx: AgentExecutionContext): Promise<string[]> => {
-  const resolved: string[] = [];
+interface ResolvedDocEntry {
+  actualDocId: string;
+  originalInput: string;
+  resolvedFromAmbiguousInput: boolean;
+  matchedBy: ResolvedDocRef['matchedBy'];
+}
+
+/**
+ * Resuelve una lista de inputs (docId exacto, nombre, slug, texto parcial)
+ * a IDs reales de Firestore. Usa fuzzyResolveDocId para ser permisivo con
+ * inputs ambiguos del agente IA.
+ */
+const resolveDocIdsForCtxDetailed = async (
+  ids: string[],
+  ctx: AgentExecutionContext
+): Promise<ResolvedDocEntry[]> => {
+  const resolved: ResolvedDocEntry[] = [];
   for (const raw of ids) {
-    try {
-      const doc = await fetchDocumentForUser(raw, ctx);
-      resolved.push(doc.id);
-    } catch {
-      // ignore unresolved
+    const ref = await fuzzyResolveDocId(raw, ctx.workspaceId, ctx.uid);
+    if (ref) {
+      resolved.push({
+        actualDocId: ref.actualDocId,
+        originalInput: raw,
+        resolvedFromAmbiguousInput: ref.resolvedFromAmbiguousInput,
+        matchedBy: ref.matchedBy
+      });
     }
   }
   return resolved;
+};
+
+/** Compat: devuelve sólo los IDs (para find_related_via_graph y expand_context). */
+const resolveDocIdsForCtx = async (ids: string[], ctx: AgentExecutionContext): Promise<string[]> => {
+  const entries = await resolveDocIdsForCtxDetailed(ids, ctx);
+  return entries.map((e) => e.actualDocId);
 };
 
 async function queryCitationGraphTool(call: AgentToolCall, ctx: AgentExecutionContext) {
@@ -532,9 +557,18 @@ async function queryCitationGraphTool(call: AgentToolCall, ctx: AgentExecutionCo
   if (focusRaw.length === 0) throw new Error('focusDocIds es requerido (array de IDs o nombres)');
   const depth = clamp(typeof call.args.depth === 'number' ? call.args.depth : 1, 1, 3);
   const kinds = normalizeKindsArg(call.args.kinds);
-  const focus = await resolveDocIdsForCtx(focusRaw, ctx);
-  if (focus.length === 0) throw new Error('Ningún focusDocId pudo resolverse a un documento del workspace.');
 
+  const focusEntries = await resolveDocIdsForCtxDetailed(focusRaw, ctx);
+  if (focusEntries.length === 0) {
+    const inputs = focusRaw.map((s) => `"${s}"`).join(', ');
+    throw new Error(
+      `No encontré un doc que coincida con ${inputs}. ` +
+      '¿Querés probar con otro nombre o pasar el docId directo? ' +
+      'Podés usar list_documents para ver los documentos disponibles.'
+    );
+  }
+
+  const focus = focusEntries.map((e) => e.actualDocId);
   const subgraph = await expandSubgraph({
     workspaceId: ctx.workspaceId,
     uid: ctx.uid,
@@ -543,13 +577,21 @@ async function queryCitationGraphTool(call: AgentToolCall, ctx: AgentExecutionCo
     ...(kinds ? { kinds } : {})
   });
 
-  const summary = `Subgrafo: ${subgraph.nodes.length} nodo(s), ${subgraph.edges.length} arista(s) (depth=${depth}${kinds ? `, kinds=${kinds.join(',')}` : ''})${subgraph.truncated ? ' [truncado por hard cap]' : ''}.`;
+  const ambiguous = focusEntries.filter((e) => e.resolvedFromAmbiguousInput);
+  const resolutionHints = ambiguous.map((e) => ({
+    originalInput: e.originalInput,
+    actualDocId: e.actualDocId,
+    matchedBy: e.matchedBy
+  }));
+
+  const summary = `Subgrafo: ${subgraph.nodes.length} nodo(s), ${subgraph.edges.length} arista(s) (depth=${depth}${kinds ? `, kinds=${kinds.join(',')}` : ''})${subgraph.truncated ? ' [truncado por hard cap]' : ''}${ambiguous.length > 0 ? ` [${ambiguous.length} input(s) resuelto(s) por nombre/slug/fuzzy]` : ''}.`;
   return ok(call, summary, {
     nodes: subgraph.nodes,
     edges: subgraph.edges,
     focus: subgraph.focus,
     depth: subgraph.depth,
-    truncated: subgraph.truncated
+    truncated: subgraph.truncated,
+    ...(ambiguous.length > 0 ? { resolvedFromAmbiguousInput: true, resolutionHints } : {})
   });
 }
 

@@ -1585,14 +1585,14 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
   },
   {
     name: 'query_citation_graph',
-    description: 'Devuelve el subgrafo de documents conectados al focus por citas (wiki-links, markdown links, conceptos compartidos, bibliografía). Úsalo PRIMERO para preguntas sobre un doc específico antes de hacer search_documents exhaustivo: te ahorra tokens en workspaces grandes.',
+    description: 'Devuelve el subgrafo de documents conectados al focus por citas (wiki-links, markdown links, conceptos compartidos, bibliografía). Úsalo PRIMERO para preguntas sobre un doc específico antes de hacer search_documents exhaustivo: te ahorra tokens en workspaces grandes. Acepta docId exacto, título completo o parcial, slug kebab-case o cualquier texto — la tool resuelve internamente por nombre exacto → slug → fuzzy (substring en nombre o contenido). Si resolvió desde un input ambiguo, la respuesta incluye `resolvedFromAmbiguousInput: true` y `resolutionHints` con el docId real.',
     parameters: {
       type: 'object',
       properties: {
         focusDocIds: {
           type: 'array',
           items: { type: 'string' },
-          description: 'IDs (o nombres) de documents desde los que expandir.'
+          description: 'IDs de Firestore, títulos, slugs o nombres parciales de los documents desde los que expandir. Se resuelven de forma permisiva: pasá lo que tengas a mano.'
         },
         depth: {
           type: 'number',
