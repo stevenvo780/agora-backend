@@ -10,12 +10,15 @@ import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/serve
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
 import type { AgentAccessPolicy } from '@/lib/agora-ai/types';
+import { validateWorkspaceId } from '@/lib/agora-ai/streamRequestValidation';
 
 export const maxDuration = 60;
 
 async function verifyAccess(request: NextRequest, workspaceId: string) {
   const auth = await requireAuth(request);
   if (!auth) return null;
+  // F9b: validar wsId antes de tocar Firestore.
+  if (!validateWorkspaceId(workspaceId)) return null;
   if (!isPersonalWorkspaceId(workspaceId)) {
     const ok = await isWorkspaceMember(workspaceId, auth.uid);
     if (!ok) return null;

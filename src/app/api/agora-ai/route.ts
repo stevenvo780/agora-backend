@@ -16,12 +16,13 @@ import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import type { AgentMode, AgentRequestBody, AIProvider } from '@/lib/agora-ai/types';
-import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
+import { isPersonalWorkspaceId } from '@/types/workspace';
 import {
   AGENT_PROVIDER_VALUES,
   readDecryptedAgentSecret,
   type AgentSecretProvider
 } from '@/lib/agora-ai/agentSecretsStore';
+import { normalizeWorkspaceIdFromBody } from '@/lib/agora-ai/streamRequestValidation';
 
 export const maxDuration = 60;
 
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json() as AgentRequestBody;
     const {
       messages,
-      workspaceId = PERSONAL_WORKSPACE_ID,
+      workspaceId: rawWorkspaceId,
       provider,
       apiKey: rawApiKey = '',
       model = '',
@@ -44,6 +45,11 @@ export async function POST(request: NextRequest) {
       accessPolicy: rawAccessPolicy,
       userInstructions: rawUserInstructions
     } = body;
+    // F9b: validar workspaceId con regex estricta antes de tocar Firestore.
+    const workspaceId = normalizeWorkspaceIdFromBody(rawWorkspaceId);
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'invalid_workspace_id' }, { status: 400 });
+    }
     const headerApiKey = request.headers.get('x-agent-key') ?? '';
     let apiKey = (headerApiKey || rawApiKey || '').trim();
     const userInstructions = typeof rawUserInstructions === 'string'

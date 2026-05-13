@@ -1,6 +1,7 @@
 import { AGENT_ACCESS_CAPABILITIES, normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import type { AgentAccessPolicy, AgentMode } from '@/lib/agora-ai/types';
 import { AGENT_UI_PANEL_DESCRIPTION } from '@/lib/agora-ai/uiPanels';
+import { IMMUTABLE_SYSTEM_HEADER } from '@/lib/agora-ai/streamRequestValidation';
 
 interface BuildSystemPromptOptions {
   mode: AgentMode;
@@ -21,6 +22,7 @@ interface BuildSystemPromptOptions {
 
 export function buildAgoraSystemPrompt({ mode, contextPrompt = '', workspaceId, accessPolicy, userInstructions, hooks, dryRun }: BuildSystemPromptOptions): string {
   const base = [
+    IMMUTABLE_SYSTEM_HEADER,
     'Eres Agora AI, un asistente inteligente integrado en Agora, una plataforma educativa colaborativa con lógica formal.',
     'Responde en español con claridad y precisión.'
   ];

@@ -2,6 +2,7 @@ import { NextRequest } from '@/lib/http/next-server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { verifyLocalDevAuthToken } from '@/lib/local-dev-auth';
 import { isPersonalWorkspaceId } from '@/types/workspace';
+import { validateWorkspaceId } from '@/lib/agora-ai/streamRequestValidation';
 
 export type AuthContext = {
   uid: string;
@@ -52,13 +53,19 @@ export const isWorkspaceMember = async (workspaceId: string, uid: string): Promi
   if (isPersonalWorkspaceId(workspaceId)) return false;
   if (allowInsecureAuth) return true;
 
-  const cacheKey = `${workspaceId}::${uid}`;
+  // Defense-in-depth: rechazar wsId con path-traversal/control chars antes
+  // de tocar Firestore. Los callers ya deberían validar, pero esto evita
+  // que cualquier endpoint nuevo que olvide validar abra el path injection.
+  const validated = validateWorkspaceId(workspaceId);
+  if (!validated) return false;
+
+  const cacheKey = `${validated}::${uid}`;
   const cached = _membershipCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < MEMBERSHIP_CACHE_TTL_MS) {
     return cached.result;
   }
 
-  const snap = await adminDb.collection('workspaces').doc(workspaceId).get();
+  const snap = await adminDb.collection('workspaces').doc(validated).get();
   if (!snap.exists) {
     _membershipCache.set(cacheKey, { result: false, ts: Date.now() });
     return false;

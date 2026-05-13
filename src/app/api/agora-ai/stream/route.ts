@@ -15,7 +15,7 @@ import {
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import { getAgentHooksCached } from '@/lib/agora-ai/agent-hooks-cache';
 import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '@/lib/agora-ai/types';
-import { isPersonalWorkspaceId, PERSONAL_WORKSPACE_ID } from '@/types/workspace';
+import { isPersonalWorkspaceId } from '@/types/workspace';
 import {
   appendChatMessage,
   createAgentChat,
@@ -28,6 +28,12 @@ import {
   AGENT_PROVIDER_VALUES,
   type AgentSecretProvider
 } from '@/lib/agora-ai/agentSecretsStore';
+import {
+  checkMessagesSize,
+  sanitizeIncomingMessages,
+  normalizeWorkspaceIdFromBody,
+  MAX_MESSAGES_BYTES
+} from '@/lib/agora-ai/streamRequestValidation';
 
 export const runtime = 'nodejs';
 // Cloud Run admite hasta 3600s (configurado en el servicio). Dejamos 100s
@@ -60,8 +66,8 @@ export async function POST(request: NextRequest) {
   }
 
   const {
-    messages,
-    workspaceId = PERSONAL_WORKSPACE_ID,
+    messages: rawMessages,
+    workspaceId: rawWorkspaceId,
     provider,
     apiKey: rawApiKey = '',
     model = '',
@@ -80,7 +86,17 @@ export async function POST(request: NextRequest) {
   const effectiveMode: AgentMode = mode === 'chat' ? 'chat' : 'agent';
   const accessPolicy = normalizeAgentAccessPolicy(rawAccessPolicy);
 
-  if (!messages?.length) {
+  // F9b: validar workspaceId con regex estricta (rechaza `../admin`, path
+  // traversal, control chars). Hacelo ANTES de tocar Firestore.
+  const workspaceId = normalizeWorkspaceIdFromBody(rawWorkspaceId);
+  if (!workspaceId) {
+    return new Response(JSON.stringify({ error: 'invalid_workspace_id' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
     return new Response('messages is required', { status: 400 });
   }
   if (!provider) {
@@ -89,6 +105,47 @@ export async function POST(request: NextRequest) {
   if (provider === 'ollama') {
     return new Response('Ollama se conecta directamente desde el navegador', { status: 400 });
   }
+
+  // F7: cap del tamaño total del array de messages. 256KB ≈ 64K tokens en
+  // el caso pesimista. Cualquier payload mayor es DoS / cost-amplification.
+  const sizeCheck = checkMessagesSize(rawMessages);
+  if (!sizeCheck.ok) {
+    return new Response(JSON.stringify({
+      error: 'messages_too_large',
+      limit: sizeCheck.limit,
+      actual: sizeCheck.totalBytes
+    }), {
+      status: 413,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // F1 + F11b: sanitizar el array de messages. Rechazamos `role:tool` del
+  // cliente (HARD 400) y marcamos `role:assistant` como historial no
+  // autoritativo para que el modelo no lo cite como output real.
+  const sanitized = sanitizeIncomingMessages(rawMessages);
+  if (!sanitized.ok) {
+    console.warn('[agora-ai/stream] messages rejected:', sanitized.rejected?.reason);
+    return new Response(JSON.stringify({
+      error: 'invalid_messages',
+      reason: sanitized.rejected?.reason ?? 'unknown'
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  const messages = sanitized.messages;
+  if (!messages.length) {
+    // Edge case: cliente mandó solo `role:system`/`role:tool` o nada
+    // utilizable tras sanitización.
+    return new Response('messages is required (after sanitization)', { status: 400 });
+  }
+  if (sanitized.warnings.length) {
+    console.warn('[agora-ai/stream] sanitize warnings:', sanitized.warnings.slice(0, 5).join(' | '));
+  }
+  // Silenciar el warning de la variable usada en runtime — el cap está
+  // expuesto vía export para tests/clientes.
+  void MAX_MESSAGES_BYTES;
 
   // Si el cliente no manda key explícita, intentamos descifrar la guardada
   // server-side para este provider. Nunca persistimos el plaintext.
@@ -297,7 +354,8 @@ export async function POST(request: NextRequest) {
             provider,
             apiKey,
             model: model || DEFAULT_MODELS[provider],
-            messages: messages.filter(message => message.role !== 'system'),
+            // `messages` ya fue sanitizado (no contiene role:system ni role:tool).
+            messages,
             contextPrompt,
             mode: effectiveMode,
             executionContext: {

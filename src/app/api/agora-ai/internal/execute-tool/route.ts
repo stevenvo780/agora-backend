@@ -5,6 +5,7 @@ import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import { isInternalToolSecretAuthorized, resolveInternalToolSecret } from '@/lib/agora-ai/internalToolAuth';
 import type { AgentExecutionContext, AgentToolCall } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId } from '@/types/workspace';
+import { normalizeWorkspaceIdFromBody } from '@/lib/agora-ai/streamRequestValidation';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
