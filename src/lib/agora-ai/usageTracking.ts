@@ -65,18 +65,24 @@ export function normalizeProvider(provider: string | null | undefined): BudgetPr
   return PROVIDER_ALIASES[key] ?? null;
 }
 
+// Thresholds generosos para sesiones QA y usuarios power (2026-05-13).
+// El cap diario sigue intacto; solo ampliamos la ventana de tokens/minuto y
+// la tolerancia de 429 antes del abuse-block (10 min) para evitar bloqueos
+// en sesiones legítimas con prompts largos.
 const DEFAULT_BUDGETS: Record<BudgetProviderKey, number> = {
   deepseek: 2_000_000,
-  openai: 200_000,
-  anthropic: 200_000,
+  openai: 500_000,   // era 200_000
+  anthropic: 500_000, // era 200_000
   google: 500_000,
-  custom: 100_000
+  custom: 300_000    // era 100_000
 };
 const DEFAULT_FALLBACK_BUDGET = 1_000_000;
 const DEFAULT_HOURLY_MESSAGE_CAP = 100;
 const HOUR_MS = 60 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
-const ABUSE_THRESHOLD_429 = 5;
+// Abuse-block tras 15 errores 429 en 10 min (era 5). Reduce falsos positivos
+// en sesiones power sin destrabar abuso real (el block sigue siendo 10 min).
+const ABUSE_THRESHOLD_429 = 15;
 const USAGE_DOC_TTL_DAYS = 7;
 const LRU_MAX_USERS = 5_000;
 

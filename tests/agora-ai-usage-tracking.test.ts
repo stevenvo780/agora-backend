@@ -307,14 +307,15 @@ test('cap horario: aislamiento por uid', () => {
   assert.equal(checkHourlyMessageCap('user-K').ok, true);
 });
 
-test('abuse-block: 5×429 en ventana → bloqueado 10min', () => {
+test('abuse-block: 15×429 en ventana → bloqueado 10min', () => {
   resetAll();
-  for (let i = 0; i < 4; i++) {
+  const threshold = __constantsForTest.ABUSE_THRESHOLD_429; // 15
+  for (let i = 0; i < threshold - 1; i++) {
     const r = recordAbuseSignal('user-L');
     assert.equal(r.blocked, false, `tras ${i + 1} señales NO debería estar bloqueado aún`);
   }
-  const fifth = recordAbuseSignal('user-L');
-  assert.equal(fifth.blocked, true, '5ta señal dispara bloqueo');
+  const last = recordAbuseSignal('user-L');
+  assert.equal(last.blocked, true, `señal ${threshold} dispara bloqueo`);
   const check = checkAbuseBlock('user-L');
   assert.equal(check.ok, false);
   if (!check.ok) {
@@ -382,12 +383,12 @@ test('helper interno dayKey: ISO YYYY-MM-DD UTC', () => {
 
 test('config: constantes exportadas con defaults sensatos', () => {
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.deepseek, 2_000_000);
-  assert.equal(__constantsForTest.DEFAULT_BUDGETS.openai, 200_000);
-  assert.equal(__constantsForTest.DEFAULT_BUDGETS.anthropic, 200_000);
+  assert.equal(__constantsForTest.DEFAULT_BUDGETS.openai, 500_000);   // ampliado de 200K
+  assert.equal(__constantsForTest.DEFAULT_BUDGETS.anthropic, 500_000); // ampliado de 200K
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.google, 500_000);
-  assert.equal(__constantsForTest.DEFAULT_BUDGETS.custom, 100_000);
+  assert.equal(__constantsForTest.DEFAULT_BUDGETS.custom, 300_000);   // ampliado de 100K
   assert.equal(__constantsForTest.DEFAULT_FALLBACK_BUDGET, 1_000_000);
   assert.equal(__constantsForTest.DEFAULT_HOURLY_MESSAGE_CAP, 100);
-  assert.equal(__constantsForTest.ABUSE_THRESHOLD_429, 5);
+  assert.equal(__constantsForTest.ABUSE_THRESHOLD_429, 15);           // ampliado de 5
   assert.equal(__constantsForTest.TEN_MIN_MS, 10 * 60 * 1000);
 });
