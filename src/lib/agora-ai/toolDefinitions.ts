@@ -1090,6 +1090,59 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     }
   },
   {
+    name: 'st_check',
+    description: 'Verifica si una fórmula ST es válida y satisfacible bajo un perfil lógico. Devuelve { valid, errors, result }. result puede ser sat/unsat/unknown (perfiles clásicos) o T/F/both/neither (Belnap).',
+    parameters: {
+      type: 'object',
+      properties: {
+        formula: { type: 'string', description: 'Fórmula ST en notación nativa o Unicode (¬, ∧, ∨, →, ↔). Ej: "P → P" o "P & ~P".' },
+        profile: { type: 'string', description: 'Perfil lógico (classical.propositional, modal.k, paraconsistent.belnap, etc.). Default classical.propositional.' }
+      },
+      required: ['formula'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'st_derive',
+    description: 'Intenta derivar `goal` desde una lista de `premises` bajo un perfil lógico. Devuelve { valid, steps, countermodel? } — los pasos son la prueba serializada y countermodel viene solo cuando la derivación falla.',
+    parameters: {
+      type: 'object',
+      properties: {
+        premises: { type: 'array', items: { type: 'string' }, description: 'Lista de premisas como strings ST (cada una se registra como axiom).' },
+        goal: { type: 'string', description: 'Fórmula objetivo a derivar.' },
+        profile: { type: 'string', description: 'Perfil lógico. Default classical.propositional.' }
+      },
+      required: ['premises', 'goal'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'st_countermodel',
+    description: 'Busca un contramodelo de una fórmula bajo un perfil. Si la fórmula es válida devuelve { valid: true }; si no, devuelve { valid: false, assignments } con un asignamiento concreto que la falsifica.',
+    parameters: {
+      type: 'object',
+      properties: {
+        formula: { type: 'string', description: 'Fórmula ST a contramodelar.' },
+        profile: { type: 'string', description: 'Perfil lógico. Default classical.propositional.' }
+      },
+      required: ['formula'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'st_formalize',
+    description: 'Heurística básica para convertir prosa libre (es) a una fórmula ST. Detecta conectivos simples: "si X entonces Y" → X → Y, "no X" → ¬X, "X y Y" → X ∧ Y, "X o Y" → X ∨ Y, "X si y sólo si Y" → X ↔ Y. Si la confianza < 0.5 devuelve suggestion=null. Para textos largos usa formalize_text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        proseText: { type: 'string', description: 'Texto en español a formalizar.' },
+        hint: { type: 'string', description: 'Perfil ST sugerido (default classical.propositional).' }
+      },
+      required: ['proseText'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'bulk_create_board_cards',
     description: 'Crea múltiples tarjetas Kanban en una sola llamada (máximo 50). Cada item del array debe tener al menos columnId y title.',
     parameters: {

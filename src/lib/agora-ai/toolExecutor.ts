@@ -4,6 +4,7 @@ import { writeAuditLog, fail } from '@/lib/agora-ai/toolExecutors/shared';
 import { DOCUMENT_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/documents';
 import { SNIPPET_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/snippets';
 import { ST_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/st';
+import { ST_TYPED_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/st-typed';
 import { BOARD_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/board';
 import { SEMANTIC_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/semantic';
 import { WORKER_TOOL_HANDLERS } from '@/lib/agora-ai/toolExecutors/worker';
@@ -25,6 +26,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   ...DOCUMENT_TOOL_HANDLERS,
   ...SNIPPET_TOOL_HANDLERS,
   ...ST_TOOL_HANDLERS,
+  ...ST_TYPED_TOOL_HANDLERS,
   ...BOARD_TOOL_HANDLERS,
   ...SEMANTIC_TOOL_HANDLERS,
   ...WORKER_TOOL_HANDLERS,

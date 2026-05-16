@@ -281,7 +281,11 @@ const LOGIC_TOOLS = new Set([
   'explain_formalization',
   'prove_step',
   'compare_logic_profiles',
-  'formalize_document_section'
+  'formalize_document_section',
+  'st_check',
+  'st_derive',
+  'st_countermodel',
+  'st_formalize'
 ]);
 
 const ADMIN_TOOLS = new Set([
