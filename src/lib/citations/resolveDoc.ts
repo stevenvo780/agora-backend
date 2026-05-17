@@ -24,9 +24,6 @@ export interface ResolvedDocRef {
 const toSlug = (s: string): string =>
   s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 
-const looksLikeFirestoreId = (s: string): boolean =>
-  /^[A-Za-z0-9]{20}$/.test(s);
-
 /**
  * Intenta resolver un string (docId, nombre, slug, texto parcial) al ID
  * de Firestore del documento dentro del workspace del usuario.
