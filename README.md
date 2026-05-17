@@ -47,7 +47,7 @@ Node.
 ## Variables Principales
 
 ```bash
-ALLOWED_ORIGINS=https://agora.humanizar.cloud,http://localhost:3000
+ALLOWED_ORIGINS=https://agora.elenxos.com,http://localhost:3000
 
 FIREBASE_PROJECT_ID=
 FIREBASE_DATABASE_URL=
@@ -69,7 +69,7 @@ MERCADOPAGO_SANDBOX=false
 
 # Hub (workers Docker en humanizar2). Required: las tools del agente IA
 # usan esta URL para alcanzar al worker correspondiente al workspace.
-NEXUS_URL=https://hub.humanizar-dev.cloud
+NEXUS_URL=https://hub.elenxos.com
 
 WORKER_SYNC_SECRET=
 WORKER_SECRET=
@@ -104,7 +104,7 @@ gcloud run deploy agora-backend \
   --concurrency 40 \
   --min-instances 0 \
   --max-instances 5 \
-  --set-env-vars "ALLOWED_ORIGINS=https://agora.humanizar.cloud,FIREBASE_PROJECT_ID=udea-filosofia,NEXUS_URL=https://hub.humanizar-dev.cloud"
+  --set-env-vars "ALLOWED_ORIGINS=https://agora.elenxos.com,FIREBASE_PROJECT_ID=udea-filosofia,NEXUS_URL=https://hub.elenxos.com"
 ```
 
 > `min-instances=0` deliberado: los cold starts del agente IA se
@@ -224,6 +224,36 @@ externos.
 
 `/api/search` consulta `searchableContent` (full-text) en lugar de
 solo metadata.
+
+### ST Tools — lógica formal en el agente
+
+Implementadas en `src/lib/agora-ai/toolExecutors/st-typed/`. Usan `@stevenvo780/st-lang@4.5.0`.
+Tactics-RAG disponible en `src/lib/agora-ai/tactics-rag/`.
+
+| Tool | Firma | Retorno |
+|------|-------|---------|
+| `st_check` | `(formula, profile)` | `{ valid, errors, result }` |
+| `st_derive` | `(premises[], goal, profile)` | `{ valid, steps, countermodel? }` |
+| `st_countermodel` | `(formula, profile)` | `{ assignments } \| { valid: true }` |
+| `st_formalize` | `(proseText, hint?)` | `{ confidence, suggestion, detectedConnectives }` |
+
+- Belnap-aware reasoning (perfiles de 4 valores).
+- Feedback loop LLM↔ST: el agente recibe errores de parseo y reintenta auto-formalizando.
+- `st_formalize` unifica el flujo anterior de auto-formalización disperso.
+
+### Endpoints ST públicos
+
+```text
+POST /api/public/st/evaluate          # evaluación ST como servicio. Auth: X-ST-API-Key
+                                      # Rate limit: 60 req/min. Quota: 1000 req/día (default)
+POST /api/admin/st-api-keys           # admin: crear/listar keys. Auth: X-Backend-Internal-Secret
+GET  /api/st-libraries                # listar libraries (filtros: visibility, profile, tag)
+POST /api/st-libraries                # crear library (auth user)
+GET  /api/st-libraries/:id            # detalle
+PATCH /api/st-libraries/:id           # actualizar
+DELETE /api/st-libraries/:id          # eliminar
+POST /api/st-libraries/:id/subscribe  # workspace se suscribe a library
+```
 
 ## Seguridad
 
