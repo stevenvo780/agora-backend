@@ -4,7 +4,12 @@ import { getErrorMessage } from '@/lib/error-utils';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    let body: { email?: unknown };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
     const rawEmail = typeof body?.email === 'string' ? body.email.trim() : '';
     const normalizedEmail = rawEmail ? normalizeEmailAddress(rawEmail) : '';
 

@@ -12,7 +12,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
         }
 
-        const { currentPassword, newPassword } = await req.json();
+        let body: { currentPassword?: string; newPassword?: string };
+        try {
+            body = await req.json();
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+        }
+        const { currentPassword, newPassword } = body;
 
         if (!currentPassword || !newPassword) {
             return NextResponse.json(
