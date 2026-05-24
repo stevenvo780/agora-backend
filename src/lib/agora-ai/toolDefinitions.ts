@@ -1143,6 +1143,87 @@ export const AGORA_AGENT_TOOLS: AgentToolDefinition[] = [
     }
   },
   {
+    name: 'st_proof_mine',
+    description: 'Extrae lemmas auxiliares reutilizables de un corpus de proofs ST. Útil cuando el usuario tiene varios proofs similares y quiere abstraer patrones comunes en lemmas más generales. Devuelve los top-K lemmas rankeados por utilidad (savings × usageCount).',
+    parameters: {
+      type: 'object',
+      properties: {
+        proofs: {
+          type: 'array',
+          description: 'Corpus de proofs a minar. Mínimo 2, máximo 50.',
+          minItems: 2,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            properties: {
+              conclusion: { type: 'string', description: 'Fórmula conclusión de la prueba.' },
+              premises: { type: 'array', items: { type: 'string' }, description: 'Axiomas/hipótesis hoja.' },
+              profile: { type: 'string', description: 'Perfil lógico (ej: classical.propositional).' },
+              steps: {
+                type: 'array',
+                description: 'Pasos del árbol de prueba (top-down).',
+                items: {
+                  type: 'object',
+                  properties: {
+                    rule: { type: 'string' },
+                    inputs: { type: 'array', items: { type: 'string' } },
+                    output: { type: 'string' },
+                    depth: { type: 'number' }
+                  },
+                  required: ['rule', 'inputs', 'output', 'depth'],
+                  additionalProperties: false
+                }
+              },
+              cost: { type: 'number', description: 'Costo heurístico de la prueba (ej: longitud).' }
+            },
+            required: ['conclusion', 'premises', 'profile', 'steps', 'cost'],
+            additionalProperties: false
+          }
+        },
+        options: {
+          type: 'object',
+          description: 'Opciones de minería (todos opcionales).',
+          properties: {
+            minReuseThreshold: { type: 'number', description: 'Umbral de reutilización mínima para extraer lemma. Default 2.' },
+            maxAbstractionLevel: { type: 'number', description: 'Nivel máximo de generalización por anti-unificación. Default 3.' },
+            preserveSemantic: { type: 'boolean', description: 'Verificar que las instancias del pattern sean válidas. Default true.' },
+            topK: { type: 'number', description: 'Cantidad máxima de lemmas a retornar. Default 5.' }
+          },
+          additionalProperties: false
+        }
+      },
+      required: ['proofs'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'st_tactic_apply',
+    description: 'Aplica una táctica del DSL estilo Lean/Coq (intro, exact, apply, rewrite, simp, assumption, trivial, rfl, split, left, right, destruct, induction, case, unfold) sobre un goal ST y retorna el nuevo estado de la prueba o un error explicado. Devuelve { complete, newGoals, history, error? }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', description: 'Fórmula objetivo a probar. Ej: "P -> P", "P -> Q -> P".' },
+        tactic: { type: 'string', description: 'Táctica a aplicar. Ej: "intro h", "exact h", "apply lemma_X", "rewrite eq1", "simp", "assumption", "split", "left", "right".' },
+        profile: { type: 'string', description: 'Perfil lógico ST (contexto, sin efecto en ejecución). Default classical.propositional.' },
+        context: {
+          type: 'array',
+          description: 'Hipótesis adicionales disponibles (opcionales).',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Nombre de la hipótesis.' },
+              statement: { type: 'string', description: 'Enunciado de la hipótesis.' }
+            },
+            required: ['name', 'statement'],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ['goal', 'tactic'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'bulk_create_board_cards',
     description: 'Crea múltiples tarjetas Kanban en una sola llamada (máximo 50). Cada item del array debe tener al menos columnId y title.',
     parameters: {
