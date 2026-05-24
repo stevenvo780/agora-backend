@@ -23,7 +23,6 @@
  *   simp
  */
 import { createRequire } from 'node:module';
-import { createRequire as createRequireAlt } from 'module';
 import type { AgentToolCall, AgentExecutionContext, AgentToolExecutionResult } from '@/lib/agora-ai/types';
 import { ok, fail } from '../shared';
 import { z } from 'zod';
