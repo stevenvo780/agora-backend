@@ -8,7 +8,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue, FieldPath } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, buildStoragePrefix, ensureTextFileName, sanitizeFileName, getStorageBaseName } from '@/lib/storage-path';
 import { DocumentType } from '@/types/documents';
@@ -35,6 +35,22 @@ const canAccessDoc = async (data: Record<string, unknown> | undefined, uid: stri
     if (!workspaceId) return false;
     return isWorkspaceMember(workspaceId, uid);
 };
+
+// Escritura (PUT/DELETE): en workspace personal solo el dueño; en compartido el
+// rol viewer es read-only y se rechaza (canWriteWorkspace).
+const canWriteDoc = async (data: Record<string, unknown> | undefined, uid: string) => {
+    const workspaceId = typeof data?.workspaceId === 'string' ? data.workspaceId : null;
+    if (isPersonalWorkspaceId(workspaceId)) {
+        return data?.ownerId === uid;
+    }
+    if (!workspaceId) return false;
+    return canWriteWorkspace(workspaceId, uid);
+};
+
+const viewerForbidden = () => NextResponse.json(
+    { error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' },
+    { status: 403 }
+);
 
 export async function PUT(req: NextRequest, context: RouteContext) {
     try {
@@ -66,6 +82,9 @@ export async function PUT(req: NextRequest, context: RouteContext) {
         const existingData = snap.data() as StoredDocumentRecord | undefined;
         if (!(await canAccessDoc(existingData, auth.uid))) {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        if (!(await canWriteDoc(existingData, auth.uid))) {
+            return viewerForbidden();
         }
 
         const existingWorkspaceId = typeof existingData?.workspaceId === 'string' ? existingData.workspaceId : PERSONAL_WORKSPACE_ID;
@@ -309,6 +328,9 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
         const data = snap.data() as StoredDocumentRecord | undefined;
         if (!(await canAccessDoc(data, auth.uid))) {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        if (!(await canWriteDoc(data, auth.uid))) {
+            return viewerForbidden();
         }
         const storagePath = typeof data?.storagePath === 'string' ? data.storagePath : undefined;
 

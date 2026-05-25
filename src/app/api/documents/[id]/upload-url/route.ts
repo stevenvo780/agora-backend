@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { calculateOwnedStorageUsageBytes } from '@/lib/storage-usage';
 import { formatStorageSize, getStorageLimitMB } from '@/types/subscription';
 import { DocumentType } from '@/types/documents';
@@ -23,6 +23,13 @@ const canAccessDoc = async (data: Record<string, unknown> | undefined, uid: stri
     const workspaceId = typeof data?.workspaceId === 'string' ? data.workspaceId : PERSONAL_WORKSPACE_ID;
     if (isPersonalWorkspaceId(workspaceId)) return data?.ownerId === uid;
     return isWorkspaceMember(workspaceId, uid);
+};
+
+// Subir un binario nuevo reemplaza contenido → es escritura. El viewer no puede.
+const canWriteDoc = async (data: Record<string, unknown> | undefined, uid: string) => {
+    const workspaceId = typeof data?.workspaceId === 'string' ? data.workspaceId : PERSONAL_WORKSPACE_ID;
+    if (isPersonalWorkspaceId(workspaceId)) return data?.ownerId === uid;
+    return canWriteWorkspace(workspaceId, uid);
 };
 
 export async function POST(req: NextRequest, context: RouteContext) {
@@ -50,6 +57,12 @@ export async function POST(req: NextRequest, context: RouteContext) {
         const data = (snap.data() ?? {}) as StoredDocumentRecord;
         if (!(await canAccessDoc(data, auth.uid))) {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        if (!(await canWriteDoc(data, auth.uid))) {
+            return NextResponse.json(
+                { error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' },
+                { status: 403 }
+            );
         }
 
         if (data.type !== DocumentType.File) {

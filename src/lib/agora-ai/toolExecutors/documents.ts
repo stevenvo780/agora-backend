@@ -2,7 +2,7 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, fail, confirm, clamp, excerpt, toEpoch, formatTimestamp, truncateText, containsQueryTokens,
-  ensureWorkspaceAccess, fetchWorkspaceDoc, fetchDocumentForUser, fetchDocumentForRead,
+  ensureWorkspaceAccess, ensureWorkspaceWrite, fetchWorkspaceDoc, fetchDocumentForUser, fetchDocumentForRead,
   loadDocumentFullContent,
   loadWorkspaceDocumentsPage,
   buildPageMeta,
@@ -450,7 +450,7 @@ async function readDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function createDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
-  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const title = String(call.args.title || '').trim() || 'Nuevo documento';
   const content = typeof call.args.content === 'string' ? call.args.content : '';
   const type = call.args.type === DocumentType.Folder ? DocumentType.Folder : DocumentType.Text;
@@ -507,7 +507,7 @@ async function createDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function restoreDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
-  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const snapshot = call.args.snapshot as Record<string, unknown> | undefined;
   if (!snapshot) throw new Error('snapshot es requerido para restaurar');
   const explicitId = typeof call.args.documentId === 'string' ? call.args.documentId : undefined;
@@ -543,6 +543,7 @@ async function restoreDocument(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const documentId = String(call.args.documentId || '').trim();
   if (!documentId) throw new Error('documentId es requerido');
   const doc = await fetchDocumentForUser(documentId, ctx);
@@ -589,6 +590,7 @@ async function updateDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function renameDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const documentId = String(call.args.documentId || '').trim();
   const newTitle = String(call.args.newTitle || '').trim();
   if (!documentId || !newTitle) throw new Error('documentId y newTitle son requeridos');
@@ -605,6 +607,7 @@ async function renameDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function moveDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const documentId = String(call.args.documentId || '').trim();
   const targetFolder = normalizeFolderPath(String(call.args.targetFolder || '').trim());
   if (!documentId) throw new Error('documentId es requerido');
@@ -626,6 +629,7 @@ async function moveDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function deleteDocument(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const documentId = String(call.args.documentId || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!documentId) throw new Error('documentId es requerido');
@@ -1045,7 +1049,7 @@ async function renameFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   const fromPath = normalizeFolderPath(String(call.args.fromPath || '').trim());
   const toName = String(call.args.toName || '').trim();
   if (!fromPath || !toName) throw new Error('fromPath y toName son requeridos');
-  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
 
   const documents = await loadAllWorkspaceDocuments(ctx);
   const folderDocs = documents.filter(d =>
@@ -1092,7 +1096,7 @@ async function deleteFolder(call: AgentToolCall, ctx: AgentExecutionContext) {
   const confirmed = call.args.confirmed === true;
   const cascade = call.args.cascade === true;
   if (!folderPath) throw new Error('folderPath es requerido');
-  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
 
   const documents = await loadAllWorkspaceDocuments(ctx);
   const folderDocs = documents.filter(d =>
@@ -1170,6 +1174,7 @@ async function uploadExternalUrl(call: AgentToolCall, ctx: AgentExecutionContext
   const customName = typeof call.args.name === 'string' ? call.args.name.trim() : '';
   const confirmed = call.args.confirmed === true;
   if (!url) throw new Error('url es requerida');
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   if (!confirmed) {
     return confirm(call, `¿Descargar "${url}" e ingestar como documento en "${targetFolder || '(raíz)'}"?`, {
       url, targetFolder

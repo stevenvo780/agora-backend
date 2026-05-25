@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, sanitizeFileName } from '@/lib/storage-path';
 import { DocumentType } from '@/types/documents';
@@ -54,6 +54,12 @@ export async function POST(req: NextRequest) {
             const member = await isWorkspaceMember(workspaceId, auth.uid);
             if (!member) {
                 return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            }
+            if (!(await canWriteWorkspace(workspaceId, auth.uid))) {
+                return NextResponse.json(
+                    { error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' },
+                    { status: 403 }
+                );
             }
         }
 

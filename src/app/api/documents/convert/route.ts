@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
-import { requireAuth, isWorkspaceMember } from '@/lib/server-auth';
+import { requireAuth, isWorkspaceMember, canWriteWorkspace } from '@/lib/server-auth';
 import { bufferToMarkdown, canConvertToMarkdown } from '@/lib/markdownConversion';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, sanitizeFileName, ensureTextFileName } from '@/lib/storage-path';
@@ -45,6 +45,12 @@ export async function POST(req: NextRequest) {
         if (!isPersonalWorkspaceId(workspaceId)) {
             const member = await isWorkspaceMember(workspaceId, auth.uid);
             if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            if (!(await canWriteWorkspace(workspaceId, auth.uid))) {
+                return NextResponse.json(
+                    { error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' },
+                    { status: 403 }
+                );
+            }
         }
 
         const folderInput = formData.get('folder');

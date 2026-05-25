@@ -45,19 +45,34 @@ export const requireAuth = async (req: NextRequest): Promise<AuthContext | null>
   }
 };
 
+/** Resultado del lookup de membership: si pertenece al workspace y con qué rol. */
+export type WorkspaceMembership = {
+  member: boolean;
+  /** owner | member | viewer | null (null = no es miembro). */
+  role: 'owner' | 'member' | 'viewer' | null;
+};
+
 // In-memory cache for workspace membership — avoids 1 Firestore read per API request
-const _membershipCache = new Map<string, { result: boolean; ts: number }>();
+const _membershipCache = new Map<string, { result: WorkspaceMembership; ts: number }>();
 const MEMBERSHIP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 
-export const isWorkspaceMember = async (workspaceId: string, uid: string): Promise<boolean> => {
-  if (isPersonalWorkspaceId(workspaceId)) return false;
-  if (allowInsecureAuth) return true;
+/**
+ * Lee la membership + rol de un usuario en un workspace en una sola query
+ * (cacheada). El rol viene de `memberRoles[uid]`; el owner siempre es 'owner'.
+ * Un miembro sin entrada en `memberRoles` se trata como 'member' (writer).
+ */
+export const getWorkspaceMembership = async (
+  workspaceId: string,
+  uid: string
+): Promise<WorkspaceMembership> => {
+  if (isPersonalWorkspaceId(workspaceId)) return { member: false, role: null };
+  if (allowInsecureAuth) return { member: true, role: 'owner' };
 
   // Defense-in-depth: rechazar wsId con path-traversal/control chars antes
   // de tocar Firestore. Los callers ya deberían validar, pero esto evita
   // que cualquier endpoint nuevo que olvide validar abra el path injection.
   const validated = validateWorkspaceId(workspaceId);
-  if (!validated) return false;
+  if (!validated) return { member: false, role: null };
 
   const cacheKey = `${validated}::${uid}`;
   const cached = _membershipCache.get(cacheKey);
@@ -67,12 +82,27 @@ export const isWorkspaceMember = async (workspaceId: string, uid: string): Promi
 
   const snap = await adminDb.collection('workspaces').doc(validated).get();
   if (!snap.exists) {
-    _membershipCache.set(cacheKey, { result: false, ts: Date.now() });
-    return false;
+    const result: WorkspaceMembership = { member: false, role: null };
+    _membershipCache.set(cacheKey, { result, ts: Date.now() });
+    return result;
   }
-  const data = snap.data() as { members?: string[] } | undefined;
+  const data = snap.data() as {
+    members?: string[];
+    ownerId?: string;
+    memberRoles?: Record<string, string>;
+  } | undefined;
   const members = Array.isArray(data?.members) ? data?.members : [];
-  const result = members.includes(uid);
+  const isMember = members.includes(uid);
+
+  let role: WorkspaceMembership['role'] = null;
+  if (data?.ownerId === uid) {
+    role = 'owner';
+  } else if (isMember) {
+    const assigned = data?.memberRoles?.[uid];
+    role = assigned === 'viewer' ? 'viewer' : 'member';
+  }
+
+  const result: WorkspaceMembership = { member: isMember || role === 'owner', role };
   _membershipCache.set(cacheKey, { result, ts: Date.now() });
 
   // Evict stale entries periodically
@@ -86,7 +116,24 @@ export const isWorkspaceMember = async (workspaceId: string, uid: string): Promi
   return result;
 };
 
-/** Force-clear membership cache (e.g. after invite/accept/remove). */
+export const isWorkspaceMember = async (workspaceId: string, uid: string): Promise<boolean> => {
+  const { member } = await getWorkspaceMembership(workspaceId, uid);
+  return member;
+};
+
+/**
+ * ¿Puede el usuario ESCRIBIR (crear/editar/borrar) en este workspace?
+ * owner → sí; member → sí; viewer → NO; no-miembro → NO.
+ * Para workspaces personales, el propietario (que NO se resuelve aquí) escribe;
+ * los callers de workspaces personales gatean por ownerId directamente.
+ */
+export const canWriteWorkspace = async (workspaceId: string, uid: string): Promise<boolean> => {
+  if (allowInsecureAuth) return true;
+  const { role } = await getWorkspaceMembership(workspaceId, uid);
+  return role === 'owner' || role === 'member';
+};
+
+/** Force-clear membership cache (e.g. after invite/accept/remove/change_role). */
 export const invalidateMembershipCache = (workspaceId: string) => {
   for (const key of _membershipCache.keys()) {
     if (key.startsWith(`${workspaceId}::`)) _membershipCache.delete(key);

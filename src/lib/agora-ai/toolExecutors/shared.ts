@@ -8,7 +8,7 @@ import { putObject, deleteObject, getObjectBuffer } from '@/lib/nas-storage';
 import { getErrorMessage } from '@/lib/error-utils';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, ensureTextFileName } from '@/lib/storage-path';
-import { isWorkspaceMember } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace } from '@/lib/server-auth';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { writeDocumentBlob } from '@/lib/documents/writeDocumentBlob';
@@ -131,6 +131,25 @@ export async function ensureWorkspaceAccess(workspaceId: string, uid: string) {
   const allowed = await isWorkspaceMember(workspaceId, uid);
   if (!allowed) {
     throw new Error('No tienes acceso a este workspace');
+  }
+}
+
+/**
+ * Como ensureWorkspaceAccess pero exige permiso de ESCRITURA. El agente actúa
+ * en nombre del user: si el user es viewer (read-only), el agente no puede
+ * crear/editar/borrar. En workspace personal el dueño escribe (ctx ya es suyo).
+ */
+export async function ensureWorkspaceWrite(workspaceId: string, uid: string) {
+  if (isPersonalWorkspaceId(workspaceId)) {
+    return;
+  }
+  const allowed = await isWorkspaceMember(workspaceId, uid);
+  if (!allowed) {
+    throw new Error('No tienes acceso a este workspace');
+  }
+  const canWrite = await canWriteWorkspace(workspaceId, uid);
+  if (!canWrite) {
+    throw new Error('Insufficient permissions: viewer role is read-only');
   }
 }
 

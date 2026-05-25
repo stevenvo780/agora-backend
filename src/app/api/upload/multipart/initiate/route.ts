@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { normalizeFolderPath } from '@/lib/folder-utils';
 import { buildStoragePath, sanitizeFileName } from '@/lib/storage-path';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
@@ -52,6 +52,12 @@ export async function POST(req: NextRequest) {
         if (!isPersonalWorkspaceId(workspaceId)) {
             const member = await isWorkspaceMember(workspaceId, auth.uid);
             if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+            if (!(await canWriteWorkspace(workspaceId, auth.uid))) {
+                return NextResponse.json(
+                    { error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' },
+                    { status: 403 }
+                );
+            }
         }
 
         const quotaResp = await enforceStorageQuota(auth.uid, fileSize);
