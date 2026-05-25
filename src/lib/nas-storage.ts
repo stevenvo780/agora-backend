@@ -220,7 +220,7 @@ export const presignUploadPart = async (
       UploadId: uploadId,
       PartNumber: partNumber
     }),
-    { expiresIn: ttlSeconds, unhoistableHeaders: new Set(['x-amz-content-sha256']) }
+    { expiresIn: ttlSeconds }
   );
 };
 
