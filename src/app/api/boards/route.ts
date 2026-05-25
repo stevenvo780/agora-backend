@@ -4,7 +4,7 @@ import { FieldValue, type CollectionReference, type DocumentReference, type Quer
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import type { BoardCard, BoardColumn } from '@/types/boards';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { parseBoardCreatePayload, parseBoardPatchPayload, parseBoardDeletePayload } from '@agora/contracts';
 
@@ -54,6 +54,15 @@ const resolveWorkspaceId = (workspaceId: string, uid: string) =>
 const canAccessWorkspace = async (workspaceId: string, uid: string) => {
   if (isPersonalWorkspaceId(workspaceId)) return true;
   return isWorkspaceMember(workspaceId, uid);
+};
+
+/**
+ * ¿Puede escribir el tablero? Personal → sí (es su propio board personal:uid).
+ * Workspace compartido → solo owner/member; viewer es read-only.
+ */
+const canModifyWorkspace = async (workspaceId: string, uid: string) => {
+  if (isPersonalWorkspaceId(workspaceId)) return true;
+  return canWriteWorkspace(workspaceId, uid);
 };
 
 const ensureBoard = async (workspaceId: string) => {
@@ -183,7 +192,7 @@ export async function POST(req: NextRequest) {
     const { workspaceId, type } = parsed.value;
     const body = parsed.value;
 
-    const allowed = await canAccessWorkspace(workspaceId, auth.uid);
+    const allowed = await canModifyWorkspace(workspaceId, auth.uid);
     if (!allowed) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -295,7 +304,7 @@ export async function PATCH(req: NextRequest) {
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
     const { workspaceId, type, id, data } = parsed.value;
 
-    const allowed = await canAccessWorkspace(workspaceId, auth.uid);
+    const allowed = await canModifyWorkspace(workspaceId, auth.uid);
     if (!allowed) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -384,7 +393,7 @@ export async function DELETE(req: NextRequest) {
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
     const { workspaceId, type, id } = parsed.value;
 
-    const allowed = await canAccessWorkspace(workspaceId, auth.uid);
+    const allowed = await canModifyWorkspace(workspaceId, auth.uid);
     if (!allowed) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }

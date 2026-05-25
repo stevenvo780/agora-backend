@@ -1,17 +1,21 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import { parseSnippetUpdatePayload } from '@agora/contracts';
 
-const canAccessSnippet = async (snippet: Record<string, unknown> | undefined, uid: string) => {
+/**
+ * ¿Puede MODIFICAR (PUT/DELETE) este snippet? Personal → solo el dueño.
+ * Workspace compartido → owner/member (canWriteWorkspace); viewer es read-only.
+ */
+const canModifySnippet = async (snippet: Record<string, unknown> | undefined, uid: string) => {
   const workspaceId = typeof snippet?.workspaceId === 'string' ? snippet.workspaceId : null;
   if (isPersonalWorkspaceId(workspaceId)) {
     return snippet?.ownerId === uid;
   }
   if (!workspaceId) return false;
-  return isWorkspaceMember(workspaceId, uid);
+  return canWriteWorkspace(workspaceId, uid);
 };
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -32,7 +36,7 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (!snap.exists) {
       return NextResponse.json({ error: 'Snippet not found' }, { status: 404 });
     }
-    if (!(await canAccessSnippet(snap.data() as Record<string, unknown> | undefined, auth.uid))) {
+    if (!(await canModifySnippet(snap.data() as Record<string, unknown> | undefined, auth.uid))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -57,7 +61,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     if (!snap.exists) {
       return NextResponse.json({ error: 'Snippet not found' }, { status: 404 });
     }
-    if (!(await canAccessSnippet(snap.data() as Record<string, unknown> | undefined, auth.uid))) {
+    if (!(await canModifySnippet(snap.data() as Record<string, unknown> | undefined, auth.uid))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 

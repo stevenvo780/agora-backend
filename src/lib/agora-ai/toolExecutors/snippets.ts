@@ -1,7 +1,7 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm, clamp, excerpt,
-  ensureWorkspaceAccess, listWorkspaceSnippets, fetchSnippetForUser, loadWorkspaceDocuments,
+  ensureWorkspaceAccess, ensureWorkspaceWrite, listWorkspaceSnippets, fetchSnippetForUser, loadWorkspaceDocuments,
   adminDb, FieldValue, isPersonalWorkspaceId, DEFAULT_PAGE_SIZE
 } from './shared';
 
@@ -30,7 +30,7 @@ async function listSnippets(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function createSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
-  await ensureWorkspaceAccess(ctx.workspaceId, ctx.uid);
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const title = String(call.args.title || '').trim();
   const markdown = typeof call.args.markdown === 'string' ? call.args.markdown : '';
   if (!title || !markdown) throw new Error('title y markdown son requeridos');
@@ -55,6 +55,7 @@ async function createSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function deleteSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const snippetId = String(call.args.snippetId || '').trim();
   if (!snippetId) throw new Error('snippetId es requerido');
   const snippet = await fetchSnippetForUser(snippetId, ctx);
@@ -109,6 +110,7 @@ async function searchSnippets(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function updateSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const snippetId = String(call.args.snippetId || '').trim();
   if (!snippetId) throw new Error('snippetId es requerido');
   const snippet = await fetchSnippetForUser(snippetId, ctx);
@@ -135,6 +137,7 @@ async function updateSnippet(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function importSnippetsFromUrl(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const url = String(call.args.url || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!url) throw new Error('url es requerida');

@@ -6,7 +6,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { parseSnippetCreatePayload } from '@agora/contracts';
 
@@ -53,8 +53,8 @@ export async function POST(req: NextRequest) {
     const resolvedWorkspaceId = wsRaw ?? PERSONAL_WORKSPACE_ID;
 
     if (!isPersonalWorkspaceId(resolvedWorkspaceId)) {
-      const member = await isWorkspaceMember(resolvedWorkspaceId, auth.uid);
-      if (!member) {
+      const canWrite = await canWriteWorkspace(resolvedWorkspaceId, auth.uid);
+      if (!canWrite) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
     }

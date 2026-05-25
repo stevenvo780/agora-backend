@@ -1,6 +1,7 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm, clamp, truncateText,
+  ensureWorkspaceWrite,
   fetchWorkerStatus, fetchNexusJson, fetchAppJson, fetchAppSseEvents,
   resolveWorkerWorkspaceId, loadWorkspaceDocuments,
   getErrorMessage, DocumentType, DEFAULT_PAGE_SIZE
@@ -36,6 +37,12 @@ function validateWorkerCommand(command: string) {
 }
 
 async function runWorkerCommand(call: AgentToolCall, ctx: AgentExecutionContext) {
+  // Un viewer (rol read-only) NO puede ejecutar comandos arbitrarios en el
+  // worker: aunque algunos comandos sean read-only (ls/cat), garantizar que un
+  // comando libre no muta el workspace es frágil. Decisión pragmática y segura:
+  // bloquear run_worker_command completo para viewers. Pueden usar las tools de
+  // lectura dedicadas (read_worker_file, list_worker_files, git_status, etc.).
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const command = String(call.args.command || '').trim();
   validateWorkerCommand(command);
   const cwd = typeof call.args.cwd === 'string' && call.args.cwd.trim() ? call.args.cwd.trim() : '.';
@@ -273,6 +280,7 @@ async function gitLog(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function gitCommitWorkspace(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const message = String(call.args.message || '').trim();
   if (!message) throw new Error('message es requerido');
   const confirmed = call.args.confirmed === true;
@@ -448,6 +456,7 @@ async function gitDiff(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function gitPull(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const remote = String(call.args.remote || 'origin').trim() || 'origin';
   const branch = typeof call.args.branch === 'string' ? call.args.branch.trim() : '';
   const cmd = `git pull ${shellQuote(remote)}${branch ? ` ${shellQuote(branch)}` : ''}`;
@@ -459,6 +468,7 @@ async function gitPull(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function gitPushBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const remote = String(call.args.remote || 'origin').trim() || 'origin';
   const branch = String(call.args.branch || '').trim();
   const confirmed = call.args.confirmed === true;
@@ -474,6 +484,7 @@ async function gitPushBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function gitCreateBranch(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const branch = String(call.args.branch || '').trim();
   if (!branch) throw new Error('branch es requerido');
   if (!/^[A-Za-z0-9_./-]+$/.test(branch)) throw new Error('Nombre de branch inválido');
@@ -486,6 +497,7 @@ async function gitCreateBranch(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function gitCheckout(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const target = String(call.args.target || '').trim();
   if (!target) throw new Error('target (branch/commit) es requerido');
   if (!/^[A-Za-z0-9_./-]+$/.test(target)) throw new Error('target inválido');
@@ -498,6 +510,7 @@ async function gitCheckout(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function gitRevertCommit(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const sha = String(call.args.sha || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!sha) throw new Error('sha es requerido');
@@ -535,6 +548,7 @@ async function readWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function writeWorkerFile(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const path = validateWorkspaceRelPath(call.args.path);
   const content = String(call.args.content ?? '');
   const confirmed = call.args.confirmed === true;
@@ -574,6 +588,7 @@ async function tailWorkerLogs(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function killWorkerProcess(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const pid = String(call.args.pid || '').trim();
   const signal = String(call.args.signal || 'TERM').trim();
   const confirmed = call.args.confirmed === true;

@@ -1,6 +1,7 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm,
+  ensureWorkspaceWrite,
   ensureBoardRef, loadBoardState, resolveBoardColumn, resolveBoardCard,
   fetchDocumentForUser,
   adminDb, FieldValue,
@@ -33,6 +34,7 @@ async function getBoard(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function createBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const name = String(call.args.name || '').trim();
   if (!name) throw new Error('name es requerido');
   const { boardRef, columns } = await loadBoardState(ctx);
@@ -53,6 +55,7 @@ async function createBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext
 }
 
 async function renameBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const columnId = String(call.args.columnId || '').trim();
   const name = String(call.args.name || '').trim();
   if (!columnId || !name) throw new Error('columnId y name son requeridos');
@@ -66,6 +69,7 @@ async function renameBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext
 }
 
 async function restoreBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const snapshot = call.args.snapshot as Record<string, unknown> | undefined;
   if (!snapshot) throw new Error('snapshot es requerido');
   const boardRef = await ensureBoardRef(ctx);
@@ -88,6 +92,7 @@ async function restoreBoardCard(call: AgentToolCall, ctx: AgentExecutionContext)
 }
 
 async function restoreBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const snapshot = call.args.snapshot as Record<string, unknown> | undefined;
   if (!snapshot) throw new Error('snapshot es requerido');
   const boardRef = await ensureBoardRef(ctx);
@@ -120,6 +125,7 @@ async function restoreBoardColumn(call: AgentToolCall, ctx: AgentExecutionContex
 }
 
 async function deleteBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const columnId = String(call.args.columnId || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!columnId) throw new Error('columnId es requerido');
@@ -143,6 +149,7 @@ async function deleteBoardColumn(call: AgentToolCall, ctx: AgentExecutionContext
 }
 
 async function createBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const columnId = String(call.args.columnId || '').trim();
   const title = String(call.args.title || '').trim();
   if (!columnId || !title) throw new Error('columnId y title son requeridos');
@@ -171,6 +178,7 @@ async function createBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function updateBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const cardId = String(call.args.cardId || '').trim();
   if (!cardId) throw new Error('cardId es requerido');
   const boardRef = await ensureBoardRef(ctx);
@@ -203,6 +211,7 @@ async function updateBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) 
 }
 
 async function moveBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const cardId = String(call.args.cardId || '').trim();
   const targetColumnId = String(call.args.targetColumnId || '').trim();
   if (!cardId || !targetColumnId) throw new Error('cardId y targetColumnId son requeridos');
@@ -232,6 +241,7 @@ async function moveBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
 }
 
 async function deleteBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const cardId = String(call.args.cardId || '').trim();
   const confirmed = call.args.confirmed === true;
   if (!cardId) throw new Error('cardId es requerido');
@@ -273,6 +283,7 @@ async function extractPendingTasks(call: AgentToolCall, ctx: AgentExecutionConte
     });
   }
 
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const { boardRef, columns } = await loadBoardState(ctx);
   const targetColumn = typeof call.args.targetColumnId === 'string' && call.args.targetColumnId.trim()
     ? await resolveBoardColumn(boardRef, call.args.targetColumnId.trim())
@@ -311,6 +322,7 @@ async function extractPendingTasks(call: AgentToolCall, ctx: AgentExecutionConte
 }
 
 async function bulkCreateBoardCards(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const cardsRaw = Array.isArray(call.args.cards) ? call.args.cards : [];
   if (cardsRaw.length === 0) throw new Error('cards (array) es requerido');
   if (cardsRaw.length > 50) throw new Error('Máximo 50 tarjetas por bulk');
@@ -340,6 +352,7 @@ async function bulkCreateBoardCards(call: AgentToolCall, ctx: AgentExecutionCont
 }
 
 async function archiveBoardCard(call: AgentToolCall, ctx: AgentExecutionContext) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const cardId = String(call.args.cardId || '').trim();
   const archived = call.args.archived !== false;
   if (!cardId) throw new Error('cardId es requerido');

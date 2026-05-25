@@ -21,7 +21,7 @@ import {
   normalizeSemanticWorkspaceState,
   type SemanticWorkspaceState
 } from '@/lib/semantic/workspace-state';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { persistConceptEdgesForWorkspace } from '@/lib/citations/workspace-citations';
 
@@ -34,6 +34,12 @@ const resolveWorkspaceStorageId = (workspaceId: string, uid: string) => (
 const canAccessWorkspace = async (workspaceId: string, uid: string) => {
   if (isPersonalWorkspaceId(workspaceId)) return true;
   return isWorkspaceMember(workspaceId, uid);
+};
+
+/** Escritura: personal → sí; workspace compartido → owner/member, no viewer. */
+const canModifyWorkspace = async (workspaceId: string, uid: string) => {
+  if (isPersonalWorkspaceId(workspaceId)) return true;
+  return canWriteWorkspace(workspaceId, uid);
 };
 
 const getMockState = (storageId: string) => (
@@ -84,7 +90,7 @@ export async function POST(req: NextRequest) {
       ? body.workspaceId.trim()
       : PERSONAL_WORKSPACE_ID;
 
-    const allowed = await canAccessWorkspace(workspaceId, auth.uid);
+    const allowed = await canModifyWorkspace(workspaceId, auth.uid);
     if (!allowed) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }

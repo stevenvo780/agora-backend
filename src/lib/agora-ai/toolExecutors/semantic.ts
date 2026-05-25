@@ -9,7 +9,7 @@ import {
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
   ok, confirm, clamp,
-  ensureWorkspaceAccess,
+  ensureWorkspaceAccess, ensureWorkspaceWrite,
   adminDb, FieldValue, resolveSemanticDocId, normalizeLookupKey
 } from './shared';
 
@@ -24,6 +24,7 @@ async function loadSemanticState(ctx: AgentExecutionContext): Promise<SemanticWo
 }
 
 async function saveSemanticState(ctx: AgentExecutionContext, state: SemanticWorkspaceState) {
+  await ensureWorkspaceWrite(ctx.workspaceId, ctx.uid);
   const storageId = resolveSemanticDocId(ctx.workspaceId, ctx.uid);
   const normalized = normalizeSemanticWorkspaceState({
     ...state,
