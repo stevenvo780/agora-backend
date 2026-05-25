@@ -64,7 +64,8 @@ export const getNasClient = (): S3Client => {
       endpoint,
       region,
       credentials: { accessKeyId: accessKey!, secretAccessKey: secretKey! },
-      forcePathStyle: true
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED'
     });
   }
   return _client;
