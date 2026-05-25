@@ -26,6 +26,35 @@ export const isNasConfigured = (): boolean => Boolean(endpoint && accessKey && s
 
 export const getNasBucket = (): string => bucket;
 
+const currentEndpointHost = (): string | null => {
+  if (!endpoint) return null;
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Una URL firmada persistida en Firestore es obsoleta si apunta a un host
+ * distinto del NAS_S3_ENDPOINT actual. Tras migrar el storage de host
+ * (Firebase Storage → MinIO, o s3.proxy.humanizar-dev.cloud → s3.elenxos.com)
+ * el host viejo queda muerto y el CSP connect-src la bloquea. Cuando es stale,
+ * el caller debe regenerar on-read con presignGet en vez de servir la guardada.
+ */
+export const isStaleBlobUrl = (url: unknown): boolean => {
+  if (typeof url !== 'string' || !url) return false;
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return false;
+  }
+  const current = currentEndpointHost();
+  if (!current) return false;
+  return host !== current;
+};
+
 export const getNasClient = (): S3Client => {
   if (!_client) {
     if (!isNasConfigured()) {

@@ -6,7 +6,7 @@ import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isNasConfigured, presignGet } from '@/lib/nas-storage';
+import { isNasConfigured, presignGet, isStaleBlobUrl } from '@/lib/nas-storage';
 
 // In-memory throttle so we don't re-sign on every onSnapshot tick.
 const streamUrlThrottle = new Map<string, { url: string; ts: number }>();
@@ -148,11 +148,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
                 const freshUrl = await maybeFreshUrl(id, snapData);
                 if (freshUrl) {
                     snapData.url = freshUrl;
-                } else if (typeof snapData.url === 'string'
-                    && /storage\.googleapis\.com\/[^/]*\.firebasestorage\.app\//.test(snapData.url)) {
-                    // El url histórico apunta a Firebase Storage legacy (caducado tras
-                    // migración a NAS/MinIO). Mejor no enviarlo: el cliente cae en
-                    // fallback en lugar de 400.
+                } else if (isStaleBlobUrl(snapData.url)) {
+                    // El url histórico apunta a un host de storage muerto (Firebase
+                    // Storage legacy o s3.proxy.humanizar-dev.cloud pre-migración).
+                    // Mejor no enviarlo: el cliente cae en fallback en lugar de 400/CSP block.
                     delete snapData.url;
                 }
                 send({ type: 'snapshot', data: snapData });

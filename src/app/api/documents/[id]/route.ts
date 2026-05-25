@@ -15,7 +15,7 @@ import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { mockGetDoc, mockUpdateDoc, mockDeleteDoc } from '@/lib/insecure-mock-store';
 import { invalidateStorageUsageCache } from '@/lib/storage-usage';
-import { isNasConfigured, moveObject, deleteObject, presignGet, getObjectBuffer } from '@/lib/nas-storage';
+import { isNasConfigured, moveObject, deleteObject, presignGet, getObjectBuffer, isStaleBlobUrl } from '@/lib/nas-storage';
 import { emitPing } from '@/lib/nas-events';
 import { parseDocumentUpdatePayload } from '@agora/contracts';
 import { isDotfileName } from '@agora/contracts';
@@ -260,6 +260,13 @@ export async function GET(req: NextRequest, context: RouteContext) {
             } catch (error) {
                 console.warn('Failed to refresh signed URL on GET:', getErrorMessage(error));
             }
+        }
+
+        // Defensa: si quedó un url guardado apuntando a un host de storage muerto
+        // (Firebase legacy o s3.proxy.humanizar-dev.cloud pre-migración) y no se
+        // pudo regenerar arriba, descartarlo para que el cliente no use uno roto.
+        if (isStaleBlobUrl(data.url)) {
+            delete data.url;
         }
 
         // Para docs de texto, inyectar `content` desde MinIO si el cliente lo pide.

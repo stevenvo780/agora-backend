@@ -15,7 +15,7 @@ import { buildStoragePath, ensureTextFileName } from '@/lib/storage-path';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { mockCreateDoc, mockListDocs } from '@/lib/insecure-mock-store';
-import { isNasConfigured } from '@/lib/nas-storage';
+import { isNasConfigured, isStaleBlobUrl } from '@/lib/nas-storage';
 import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
 import { createDocumentBlob } from '@/lib/documents/writeDocumentBlob';
 import { decodeDocumentsCursor, encodeDocumentsCursor } from '@/lib/documents/cursor';
@@ -231,8 +231,11 @@ export async function GET(req: NextRequest) {
             const data = doc.data() as Record<string, unknown>;
             const raw: Record<string, unknown> = { id: doc.id, ...data };
             normalizeDotfileLegacy(raw);
-            if (typeof raw.url === 'string'
-                && /storage\.googleapis\.com\/[^/]*\.firebasestorage\.app\//.test(raw.url)) {
+            // El url firmado guardado puede apuntar a un host de storage muerto
+            // (Firebase Storage legacy o s3.proxy.humanizar-dev.cloud pre-migración).
+            // Si no coincide con el endpoint MinIO actual, lo descartamos: el
+            // viewer pide /api/documents/[id] y obtiene una URL fresca on-read.
+            if (isStaleBlobUrl(raw.url)) {
                 delete raw.url;
             }
             const updatedAt = data.updatedAt as { toMillis?: () => number } | undefined;
