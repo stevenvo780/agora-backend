@@ -78,6 +78,7 @@ type WorkspaceRecord = {
   name?: string;
   members?: string[];
   pendingInvites?: string[];
+  memberRoles?: Record<string, string>;
 };
 
 type StoredDocumentRecord = Record<string, unknown>;
@@ -723,6 +724,30 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
         // Sync custom claims to revoke workspace access in rules
         syncWorkspaceClaims(userId).catch(() => {});
         return NextResponse.json({ status: 'removed' });
+    }
+
+    if (action === 'change_role') {
+        const { userId, role } = body as { userId?: string; role?: string };
+        if (!userId) {
+            return NextResponse.json({ error: 'userId is required' }, { status: 400 });
+        }
+        if (role !== 'member' && role !== 'viewer') {
+            return NextResponse.json({ error: 'role must be "member" or "viewer"' }, { status: 400 });
+        }
+        if (wsData?.ownerId !== auth.uid) {
+            return NextResponse.json({ error: 'Only workspace owner can change roles' }, { status: 403 });
+        }
+        if (userId === wsData.ownerId) {
+            return NextResponse.json({ error: 'Cannot change role of workspace owner' }, { status: 400 });
+        }
+        if (!Array.isArray(wsData?.members) || !wsData.members.includes(userId)) {
+            return NextResponse.json({ error: 'User is not a member of this workspace' }, { status: 400 });
+        }
+        await wsRef.update({
+            [`memberRoles.${userId}`]: role
+        });
+        invalidateMembershipCache(id);
+        return NextResponse.json({ status: 'role_changed', userId, role });
     }
 
     if (action === 'merge') {
