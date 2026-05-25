@@ -117,7 +117,15 @@ export async function POST(req: NextRequest) {
         }
         if (!wsOwner) {
             await deleteObject(storagePath).catch(() => undefined);
-            return NextResponse.json({ error: 'Owner not resolvable' }, { status: 500 });
+            return NextResponse.json(
+                {
+                    error: 'Workspace not found in Firestore',
+                    detail: `Token resolved to wsId="${ctx.workspaceId}" but no matching workspace document exists. Check WORKER_TOKEN format (use "personal:<uid>" for personal workspaces, raw wsId for shared).`,
+                    wsId: ctx.workspaceId,
+                    code: 'WORKSPACE_NOT_FOUND',
+                },
+                { status: 404 },
+            );
         }
         if (size && size > 0) {
             // Para updates, descontar el size del doc existente (no double-count).
