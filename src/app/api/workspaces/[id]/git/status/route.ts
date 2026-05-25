@@ -73,15 +73,24 @@ export async function GET(req: NextRequest, context: RouteContext) {
         //    - folders (no son archivos commiteables)
         //    - docs sin storagePath (huérfanos)
         //    - paths que matchean .gitignore (node_modules/, .env, etc.)
-        const items = docs.docs
-            .filter(d => {
-                const data = d.data() as { type?: string; storagePath?: string; name?: string; folder?: string };
-                if (data.type === 'folder') return false;
-                if (typeof data.storagePath !== 'string' || data.storagePath.length === 0) return false;
-                const repoPath = buildRepoPath(data.folder, data.name);
-                return !isIgnoredPath(ig, repoPath);
-            })
-            .map((d) => {
+        type StatusItem = {
+            docId: string;
+            repoPath: string;
+            name: string | null;
+            folder: string | null;
+            size: number | null;
+            type: string | null;
+            currentHash: string | null;
+            committedHash: string | null;
+            lastSha: string | null;
+            status: 'clean' | 'modified' | 'new' | 'unknown';
+        };
+
+        const items: StatusItem[] = [];
+        for (const d of docs.docs) {
+            // Un doc corrupto (p.ej. name con `../`, path no relativo que rompe
+            // `isIgnoredPath`) no debe tumbar todo el panel git con un 500.
+            try {
                 const data = d.data() as {
                     name?: string;
                     folder?: string;
@@ -91,12 +100,17 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     type?: string;
                     git?: { committedHash?: string; lastSha?: string };
                 };
+                if (data.type === 'folder') continue;
+                if (typeof data.storagePath !== 'string' || data.storagePath.length === 0) continue;
+
                 const repoPath = buildRepoPath(data.folder, data.name);
+                if (isIgnoredPath(ig, repoPath)) continue;
+
                 const committedHash = data.git?.committedHash ?? null;
                 const currentHash = data.contentHash ?? null;
                 const remoteSha = repoTree.get(repoPath) ?? null;
 
-                let status: 'clean' | 'modified' | 'new' | 'unknown';
+                let status: StatusItem['status'];
                 if (committedHash && currentHash) {
                     status = committedHash === currentHash ? 'clean' : 'modified';
                 } else if (currentHash && remoteSha) {
@@ -113,7 +127,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     status = 'new';
                 }
 
-                return {
+                items.push({
                     docId: d.id,
                     repoPath,
                     name: data.name ?? null,
@@ -124,8 +138,11 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     committedHash,
                     lastSha: data.git?.lastSha ?? remoteSha,
                     status
-                };
-            });
+                });
+            } catch (docErr) {
+                console.warn('[git/status] skip invalid path', d.id, getErrorMessage(docErr));
+            }
+        }
 
         return NextResponse.json({
             workspaceId,

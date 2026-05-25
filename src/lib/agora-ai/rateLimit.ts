@@ -4,6 +4,17 @@ type AgentRateBucket = {
   lastTouchedAt: number;
 };
 
+/**
+ * Convierte un retryAfter en ms a una etiqueta legible coherente con el número
+ * real: segundos si <60s, si no minutos redondeados hacia arriba ("~14 min").
+ */
+export function formatRetryAfter(retryAfterMs: number): string {
+  const totalSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const minutes = Math.ceil(totalSec / 60);
+  return `~${minutes} min`;
+}
+
 const buckets = new Map<string, AgentRateBucket>();
 const BUCKET_TTL_MS = 5 * 60 * 1000;
 

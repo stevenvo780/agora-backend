@@ -2,7 +2,7 @@ import { NextRequest } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/server-auth';
 import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { runProviderConversation } from '@/lib/agora-ai/providerAdapters';
-import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
+import { claimAgoraAgentRequest, formatRetryAfter } from '@/lib/agora-ai/rateLimit';
 import {
   checkDailyBudget,
   checkHourlyMessageCap,
@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
   const abuse = checkAbuseBlock(auth.uid);
   if (!abuse.ok) {
     return reply429(
-      'Usuario bloqueado temporalmente por exceso de rate-limits. Espera unos minutos.',
+      `Usuario bloqueado temporalmente por exceso de rate-limits. Intenta de nuevo en ${formatRetryAfter(abuse.retryAfterMs)}.`,
       Math.ceil(abuse.retryAfterMs / 1000),
       'abuse-block',
       abuse.retryAfterMs
@@ -235,7 +235,7 @@ export async function POST(request: NextRequest) {
   const hourly = checkHourlyMessageCap(auth.uid);
   if (!hourly.ok) {
     return reply429(
-      `Has superado el límite horario de mensajes al agente (${hourly.cap}/h). Intenta más tarde.`,
+      `Has superado el límite horario de mensajes al agente (${hourly.cap}/h). Intenta de nuevo en ${formatRetryAfter(hourly.retryAfterMs)}.`,
       Math.ceil(hourly.retryAfterMs / 1000),
       'hourly-message-cap',
       hourly.retryAfterMs,
@@ -262,7 +262,7 @@ export async function POST(request: NextRequest) {
   });
   if (!claim.ok) {
     return reply429(
-      `Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${Math.ceil(claim.retryAfterMs / 1000)}s.`,
+      `Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${formatRetryAfter(claim.retryAfterMs)}.`,
       Math.ceil(claim.retryAfterMs / 1000),
       'abuse-block',
       claim.retryAfterMs

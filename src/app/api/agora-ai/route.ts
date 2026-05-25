@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/server-auth';
 import { runProviderConversation } from '@/lib/agora-ai/providerAdapters';
 import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
-import { claimAgoraAgentRequest } from '@/lib/agora-ai/rateLimit';
+import { claimAgoraAgentRequest, formatRetryAfter } from '@/lib/agora-ai/rateLimit';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import type { AgentMode, AgentRequestBody, AIProvider } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId } from '@/types/workspace';
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
     });
     if (!claim.ok) {
       return NextResponse.json({
-        error: `Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${Math.ceil(claim.retryAfterMs / 1000)}s.`,
+        error: `Demasiadas solicitudes seguidas a ${provider}. Intenta de nuevo en ${formatRetryAfter(claim.retryAfterMs)}.`,
         retryAfterMs: claim.retryAfterMs,
         reason: claim.reason
       }, { status: 429 });
