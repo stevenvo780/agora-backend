@@ -1,6 +1,6 @@
 import {
   type AgentToolCall, type AgentExecutionContext, type AgentToolExecutionResult,
-  ok, clamp, adminDb, FieldValue
+  ok, clamp, adminDb, FieldValue, FieldPath
 } from './shared';
 
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
@@ -82,10 +82,12 @@ async function agentRemember(call: AgentToolCall, ctx: AgentExecutionContext) {
   if (typeof value === 'undefined') throw new Error('value es requerido');
   const ref = memoryDocRef(ctx.uid, ctx.workspaceId, scope as 'user' | 'workspace');
   await ref.set({
-    [`memories.${key}`]: {
-      value,
-      savedAt: FieldValue.serverTimestamp(),
-      lastAccessedAt: FieldValue.serverTimestamp()
+    memories: {
+      [key]: {
+        value,
+        savedAt: FieldValue.serverTimestamp(),
+        lastAccessedAt: FieldValue.serverTimestamp()
+      }
     }
   }, { merge: true });
   return ok(call, `Memoria "${key}" guardada en scope ${scope}.`, { key, scope }, [
@@ -127,7 +129,10 @@ async function agentForget(call: AgentToolCall, ctx: AgentExecutionContext) {
   const scope = call.args.scope === 'user' ? 'user' : 'workspace';
   if (!key) throw new Error('key es requerida');
   const ref = memoryDocRef(ctx.uid, ctx.workspaceId, scope as 'user' | 'workspace');
-  await ref.set({ [`memories.${key}`]: FieldValue.delete() }, { merge: true });
+  await ref.update(new FieldPath('memories', key), FieldValue.delete()).catch((err: unknown) => {
+    if ((err as { code?: number }).code === 5) return;
+    throw err;
+  });
   return ok(call, `Memoria "${key}" eliminada de scope ${scope}.`, { key, scope });
 }
 
