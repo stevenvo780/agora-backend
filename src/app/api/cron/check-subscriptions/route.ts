@@ -11,14 +11,23 @@ import { timingSafeEqual } from 'node:crypto';
  * Cron job que corre 1x/día para marcar como expiradas las suscripciones
  * cuyo endDate ya pasó. Complementa la verificación lazy de subscription-status.
  *
- * Protegido por CRON_SECRET de Vercel (enviado automáticamente en el header Authorization).
+ * Protegido por CRON_SECRET. Acepta el secret en `Authorization: Bearer <secret>`
+ * (Vercel cron / citations-backfill style) o en `x-cron-secret: <secret>`
+ * (Cloud Scheduler legacy) — así no depende de cómo esté armado el job.
  */
-const safeBearerEqual = (authHeader: string, secret: string): boolean => {
-  const expected = `Bearer ${secret}`;
-  const a = Buffer.from(authHeader);
+const safeEqual = (value: string, expected: string): boolean => {
+  const a = Buffer.from(value);
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+};
+
+const isAuthorized = (req: NextRequest, secret: string): boolean => {
+  const authHeader = req.headers.get('authorization') ?? '';
+  if (authHeader && safeEqual(authHeader, `Bearer ${secret}`)) return true;
+  const cronHeader = req.headers.get('x-cron-secret') ?? '';
+  if (cronHeader && safeEqual(cronHeader, secret)) return true;
+  return false;
 };
 
 export async function GET(req: NextRequest) {
@@ -28,8 +37,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Cron not configured' }, { status: 503 });
   }
 
-  const authHeader = req.headers.get('authorization') ?? '';
-  if (!safeBearerEqual(authHeader, cronSecret)) {
+  if (!isAuthorized(req, cronSecret)) {
     console.warn('[Cron] Unauthorized cron attempt');
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

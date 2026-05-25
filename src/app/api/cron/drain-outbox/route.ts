@@ -43,20 +43,18 @@ export async function GET(req: NextRequest) {
         for (const d of snap.docs) {
             const parsed = parseOutboxRecord(d.id, d.data());
             if (!parsed.ok) {
-                await d.ref.update({
-                    expiredAt: FieldValue.serverTimestamp(),
-                    expiredReason: `parse:${parsed.error.slice(0, 80)}`
-                }).catch(() => undefined);
+                // Borrar: un doc corrupto nunca se podrá publicar y, si solo lo
+                // marcáramos, seguiría cayendo en `published == false` para siempre.
+                await d.ref.delete().catch(() => undefined);
                 expired++;
                 continue;
             }
             const rec = parsed.value;
 
             if (rec.ts < cutoff || rec.retryCount >= MAX_RETRIES) {
-                await d.ref.update({
-                    expiredAt: FieldValue.serverTimestamp(),
-                    expiredReason: rec.ts < cutoff ? 'too-old' : 'max-retries'
-                }).catch(() => undefined);
+                // Demasiado viejo o sin reintentos: el ping ya no tiene valor de
+                // replay. Borrarlo lo saca de la query (evita re-expirar cada 5min).
+                await d.ref.delete().catch(() => undefined);
                 expired++;
                 continue;
             }
