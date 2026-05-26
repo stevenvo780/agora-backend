@@ -14,6 +14,7 @@ import {
 } from '@/lib/agora-ai/usageTracking';
 import { normalizeAgentAccessPolicy } from '@/lib/agora-ai/accessPolicy';
 import { getAgentHooksCached } from '@/lib/agora-ai/agent-hooks-cache';
+import { getAgentSettings, resolveAgentSettings } from '@/lib/agora-ai/agentSettingsStore';
 import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '@/lib/agora-ai/types';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import {
@@ -350,14 +351,25 @@ export async function POST(request: NextRequest) {
             : '';
 
           const userHooks = await getAgentHooksCached(auth.uid) ?? undefined;
+          // Settings de autonomía (Firestore, validados con schema). mainModel
+          // override del default; auxModel barato para clasificar confirmaciones;
+          // autonomousMode habilita el bypass de "¿continúo?".
+          const requestModel = model || DEFAULT_MODELS[provider];
+          const settings = resolveAgentSettings(
+            await getAgentSettings(auth.uid),
+            provider,
+            requestModel
+          );
           const agentRun = await runProviderConversation({
             provider,
             apiKey,
-            model: model || DEFAULT_MODELS[provider],
+            model: settings.mainModel,
             // `messages` ya fue sanitizado (no contiene role:system ni role:tool).
             messages,
             contextPrompt,
             mode: effectiveMode,
+            autonomousMode: settings.autonomousMode,
+            auxModel: settings.auxModel,
             executionContext: {
               workspaceId,
               uid: auth.uid,

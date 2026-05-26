@@ -35,7 +35,18 @@ export const env = {
   ALLOW_INSECURE_AUTH: () => flag('NEXT_PUBLIC_ALLOW_INSECURE_AUTH'),
   AGORA_USE_NAS: () => flag('AGORA_USE_NAS'),
   MERCADOPAGO_SANDBOX: () => flag('MERCADOPAGO_SANDBOX'),
-  ENABLE_ADMIN_ENDPOINTS: () => flag('ENABLE_ADMIN_ENDPOINTS')
+  ENABLE_ADMIN_ENDPOINTS: () => flag('ENABLE_ADMIN_ENDPOINTS'),
+
+  /**
+   * Máximo de auto-continues que el loop agéntico inyecta cuando el modelo
+   * anuncia una intención sin llamar tools (fix del bug "el agente se para
+   * tras un plan"). Cada auto-continue cuesta una vuelta extra al provider;
+   * el budget de tiempo/tokens sigue mandando por encima de este cap.
+   */
+  AGORA_AI_MAX_AUTO_CONTINUES: () => {
+    const raw = Number(trim('AGORA_AI_MAX_AUTO_CONTINUES'));
+    return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 12;
+  }
 } as const;
 
 export interface EnvCheck {

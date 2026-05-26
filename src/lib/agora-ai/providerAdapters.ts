@@ -5,6 +5,13 @@ import { maybeCompact } from '@/lib/agora-ai/conversationCompactor';
 import { createSummaryClient } from '@/lib/agora-ai/summaryClient';
 import { executeAgentTool } from '@/lib/agora-ai/toolExecutor';
 import { isCacheableAgentTool, isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
+import {
+  classifyTextOnlyTurn,
+  isPermissionOnlyMessage,
+  AUTO_CONTINUE_PROMPT,
+  AUTO_CONFIRM_PROMPT
+} from '@/lib/agora-ai/autonomy';
+import { env } from '@/lib/env';
 import type {
   AgentExecutionContext,
   AgentMode,
@@ -91,6 +98,88 @@ interface ProviderRunOptions {
   executionContext: AgentExecutionContext;
   callbacks?: ProviderRunCallbacks;
   userInstructions?: string;
+  /** Autonomía: si ON, auto-confirma los puntos donde el agente pide permiso
+   *  (clasificados con auxModel). Default false. */
+  autonomousMode?: boolean;
+  /** Modelo barato para la clasificación de "¿solo pide permiso?". */
+  auxModel?: string;
+  /** Cap de auto-continues por request. Default desde env (12). */
+  maxAutoContinues?: number;
+}
+
+/**
+ * Estado del auto-continue dentro de un run. El loop agéntico corta el turno en
+ * cuanto el modelo emite texto sin tool_calls; cuando ese texto solo anuncia
+ * una intención ("ahora creo los docs…") o pide permiso, inyectamos un mensaje
+ * de continuación y seguimos iterando en vez de terminar a medias.
+ */
+interface AutoContinueState {
+  /** Auto-continues consumidos en este run (acotado por maxAutoContinues). */
+  used: number;
+  /** Vueltas seguidas sin que el agente llame ninguna tool nueva. 2 = stall. */
+  noProgressStreak: number;
+}
+
+/**
+ * Decide qué hacer ante un turno text-only (sin tool_calls). Devuelve el mensaje
+ * de continuación a inyectar, o null para terminar el run de forma natural.
+ * Salvaguardas: cap de auto-continues, detección de no-progreso (2 vueltas sin
+ * tools), respeto del budget de tiempo (lo chequea el loop antes de re-iterar).
+ */
+async function decideAutoContinue(
+  options: ProviderRunOptions,
+  state: AutoContinueState,
+  visibleContent: string,
+  maxAutoContinues: number,
+  emitStatus: (status: string) => Promise<void>
+): Promise<string | null> {
+  if (options.mode !== 'agent') return null;
+  if (state.used >= maxAutoContinues) return null;
+  // Stall: si tras una continuación el agente no llamó tools 2 veces seguidas,
+  // paramos para no entrar en un loop de "ok, continúo" sin actuar.
+  if (state.noProgressStreak >= 2) return null;
+
+  const intent = classifyTextOnlyTurn(visibleContent);
+
+  if (intent === 'confirm') {
+    // Punto de confirmación: solo el bypass (autonomousMode) lo auto-resuelve.
+    if (!options.autonomousMode) return null;
+    const auxClient = options.auxModel
+      ? makeClassifierClient(options, options.auxModel)
+      : null;
+    const permissionOnly = await isPermissionOnlyMessage(visibleContent, auxClient);
+    if (!permissionOnly) return null;
+    state.used += 1;
+    await emitStatus(`Modo autónomo: auto-confirmando para continuar (${state.used}/${maxAutoContinues})…`);
+    return AUTO_CONFIRM_PROMPT;
+  }
+
+  if (intent === 'announce') {
+    // Fix conservador del bug: el agente anunció sin actuar. Empujamos a
+    // ejecutar SIEMPRE (no requiere autonomousMode).
+    state.used += 1;
+    await emitStatus(`Empujando al agente a ejecutar (auto-continue ${state.used}/${maxAutoContinues})…`);
+    return AUTO_CONTINUE_PROMPT;
+  }
+
+  return null;
+}
+
+/** Cliente de clasificación barato basado en el summaryClient (single-turn). */
+function makeClassifierClient(options: ProviderRunOptions, auxModel: string) {
+  const summary = createSummaryClient({
+    provider: options.provider,
+    apiKey: options.apiKey,
+    model: auxModel,
+    timeoutMs: 8000
+  });
+  return {
+    classify: (prompt: string) => summary.summarize({
+      systemPrompt: 'Responde de forma extremadamente concisa.',
+      messages: [{ role: 'user', content: prompt }],
+      maxTokens: 8
+    })
+  };
 }
 
 type OpenAIToolCall = {
@@ -456,6 +545,8 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   let truncated = false;
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
+  const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
+  const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -525,9 +616,21 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
       break;
     }
     if (!toolCalls.length || options.mode !== 'agent') {
+      const continuation = await decideAutoContinue(
+        options, autoContinue, visibleContent, maxAutoContinues, emitStatus
+      );
+      if (continuation) {
+        autoContinue.noProgressStreak += 1;
+        messages.push({ role: 'assistant', content: rawContent || visibleContent || '' });
+        messages.push({ role: 'user', content: continuation });
+        finalReply = visibleContent || finalReply;
+        continue;
+      }
       finalReply = visibleContent || finalReply || 'Listo.';
       break;
     }
+    // El agente llamó tools: hay progreso real, reseteamos el contador de stall.
+    autoContinue.noProgressStreak = 0;
 
     // Push assistant turn (before executing tools)
     const assistantTurn: Record<string, unknown> = {
@@ -641,6 +744,8 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   let truncated = false;
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
+  const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
+  const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -738,9 +843,21 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
       .map(b => ({ id: b.id, name: b.name, args: b.input }));
 
     if (!toolCalls.length || options.mode !== 'agent') {
+      const continuation = await decideAutoContinue(
+        options, autoContinue, visibleContent, maxAutoContinues, emitStatus
+      );
+      if (continuation) {
+        autoContinue.noProgressStreak += 1;
+        // Reusamos los blocks verbatim para mantener continuidad de razonamiento.
+        messages.push({ role: 'assistant', content: blocks.length ? blocks : (visibleContent || '') });
+        messages.push({ role: 'user', content: continuation });
+        finalReply = visibleContent || finalReply;
+        continue;
+      }
       finalReply = visibleContent || finalReply || 'Listo.';
       break;
     }
+    autoContinue.noProgressStreak = 0;
 
     // Push full assistant turn — MUST include thinking blocks verbatim for
     // the model to maintain reasoning continuity across turns.
@@ -838,6 +955,8 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   let truncated = false;
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
+  const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
+  const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -905,9 +1024,20 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
       }));
 
     if (!toolCalls.length || options.mode !== 'agent') {
+      const continuation = await decideAutoContinue(
+        options, autoContinue, visibleContent, maxAutoContinues, emitStatus
+      );
+      if (continuation) {
+        autoContinue.noProgressStreak += 1;
+        contents.push({ role: 'model', parts: parts.length ? (parts as Array<Record<string, unknown>>) : [{ text: visibleContent || '' }] });
+        contents.push({ role: 'user', parts: [{ text: continuation }] });
+        finalReply = visibleContent || finalReply;
+        continue;
+      }
       finalReply = visibleContent || finalReply || 'Listo.';
       break;
     }
+    autoContinue.noProgressStreak = 0;
 
     // Push model turn (includes function call parts)
     contents.push({ role: 'model', parts: parts as Array<Record<string, unknown>> });
