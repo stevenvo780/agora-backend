@@ -5,7 +5,9 @@ import {
   clampMessagesLimit,
   getAgentChat,
   listChatMessages,
-  parseChatMessageAppendPayload
+  parseChatMessageAppendPayload,
+  truncateChatFromUserIndex,
+  truncateChatMessagesFrom
 } from '@/lib/agora-ai/chatPersistence';
 
 export const runtime = 'nodejs';
@@ -51,5 +53,39 @@ export async function POST(request: NextRequest, context: RouteContext): Promise
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[agora-ai/chats/:id/messages] POST', message);
     return NextResponse.json({ error: 'No se pudo agregar mensaje' }, { status: 500 });
+  }
+}
+
+// Trunca la conversación para el checkpoint "volver aquí". Acepta
+// `?fromUserIndex=<n>` (preferido: posición del N-ésimo turno user) o
+// `?from=<msgId>` (doc id). Borra ese punto y todo lo posterior.
+export async function DELETE(request: NextRequest, context: RouteContext): Promise<Response> {
+  const auth = await requireAuth(request);
+  if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+  const { id } = await context.params;
+
+  const params = request.nextUrl.searchParams;
+  const fromUserIndexRaw = params.get('fromUserIndex');
+  const from = params.get('from');
+  if (fromUserIndexRaw === null && !from) {
+    return NextResponse.json({ error: 'Falta "fromUserIndex" o "from"' }, { status: 400 });
+  }
+
+  try {
+    const chat = await getAgentChat(auth.uid, id);
+    if (!chat) return NextResponse.json({ error: 'Chat no encontrado' }, { status: 404 });
+    let deleted: number | null;
+    if (fromUserIndexRaw !== null) {
+      const idx = Number.parseInt(fromUserIndexRaw, 10);
+      deleted = await truncateChatFromUserIndex(auth.uid, id, idx);
+    } else {
+      deleted = await truncateChatMessagesFrom(auth.uid, id, from as string);
+    }
+    if (deleted === null) return NextResponse.json({ error: 'Punto de truncado no encontrado' }, { status: 404 });
+    return NextResponse.json({ deleted });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[agora-ai/chats/:id/messages] DELETE', message);
+    return NextResponse.json({ error: 'No se pudo truncar la conversación' }, { status: 500 });
   }
 }

@@ -241,6 +241,69 @@ export const listChatMessages = async (uid: string, chatId: string, params: {
   return { items, nextCursor };
 };
 
+const deleteMessagesFromTs = async (
+  uid: string,
+  chatId: string,
+  anchorTs: number
+): Promise<number> => {
+  const msgsRef = messagesCol(uid, chatId);
+  let deleted = 0;
+  for (let i = 0; i < 50; i += 1) {
+    const page = await msgsRef.where('ts', '>=', anchorTs).orderBy('ts', 'asc').limit(400).get();
+    if (page.empty) break;
+    const batch = adminDb.batch();
+    page.docs.forEach((d) => {
+      batch.delete(d.ref);
+      deleted += 1;
+    });
+    await batch.commit();
+    if (page.size < 400) break;
+  }
+  await chatsCol(uid).doc(chatId).update({ updatedAt: Date.now() });
+  return deleted;
+};
+
+/**
+ * Trunca la conversación borrando el mensaje `fromMessageId` y todos los
+ * posteriores (orden por `ts`). Devuelve la cantidad de mensajes borrados, o
+ * `null` si el mensaje ancla no existe.
+ */
+export const truncateChatMessagesFrom = async (
+  uid: string,
+  chatId: string,
+  fromMessageId: string
+): Promise<number | null> => {
+  const anchorSnap = await messagesCol(uid, chatId).doc(fromMessageId).get();
+  if (!anchorSnap.exists) return null;
+  const anchorTs = toMillis((anchorSnap.data() as Record<string, unknown>).ts);
+  return deleteMessagesFromTs(uid, chatId, anchorTs);
+};
+
+/**
+ * Trunca a partir del N-ésimo mensaje de rol `user` (0-based, orden por `ts`)
+ * y todos los posteriores. Robusto para el checkpoint "volver aquí": el cliente
+ * sólo conoce la posición del turno, no el doc id de Firestore (los mensajes
+ * en vivo usan ids locales). El stream persiste exactamente 1 doc user + 1 doc
+ * assistant por turno, así que el índice de user mapea 1:1 con la UI.
+ * Devuelve la cantidad borrada, o `null` si no existe ese índice de user.
+ */
+export const truncateChatFromUserIndex = async (
+  uid: string,
+  chatId: string,
+  userIndex: number
+): Promise<number | null> => {
+  if (!Number.isInteger(userIndex) || userIndex < 0) return null;
+  const userMsgs = await messagesCol(uid, chatId)
+    .where('role', '==', 'user')
+    .orderBy('ts', 'asc')
+    .limit(userIndex + 1)
+    .get();
+  const anchor = userMsgs.docs[userIndex];
+  if (!anchor) return null;
+  const anchorTs = toMillis((anchor.data() as Record<string, unknown>).ts);
+  return deleteMessagesFromTs(uid, chatId, anchorTs);
+};
+
 export const deriveChatTitleFromContent = (content: string): string => {
   const cleaned = content.replace(/[#>*_`~-]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!cleaned) return 'Nuevo chat';
