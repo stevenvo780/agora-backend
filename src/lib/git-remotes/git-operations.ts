@@ -42,6 +42,7 @@ interface IsoGitModule {
   fetch: (args: Record<string, unknown>) => Promise<unknown>;
   listBranches: (args: Record<string, unknown>) => Promise<string[]>;
   resolveRef: (args: Record<string, unknown>) => Promise<string>;
+  getRemoteInfo: (args: Record<string, unknown>) => Promise<{ HEAD?: string; refs?: Record<string, unknown> }>;
 }
 
 interface IsoHttpModule {
@@ -105,9 +106,29 @@ interface ExecuteArgs {
   repoName: string;
   remote: WorkspaceRemoteRecord;
   encryptedSecret: string | null;
-  /** Branch a sincronizar. Default `main`. */
+  /** Branch a sincronizar. Si no se pasa, se resuelve el HEAD real del remote. */
   ref?: string;
 }
+
+/**
+ * Descubre el branch default del remote (su HEAD) sin clonar. Evita asumir
+ * `main` cuando el repo usa `master` u otro. `getRemoteInfo` devuelve HEAD como
+ * `refs/heads/<branch>`; extraemos el nombre corto.
+ */
+const resolveDefaultBranch = async (
+  deps: IsoGitDeps,
+  url: string,
+  fallback: string
+): Promise<string> => {
+  try {
+    const info = await deps.git.getRemoteInfo({ http: deps.http, url });
+    const head = typeof info.HEAD === 'string' ? info.HEAD : '';
+    const short = head.replace(/^refs\/heads\//, '').trim();
+    return short || fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 /**
  * Push del repo Forgejo → remote externo. Idea: clonar Forgejo a un dir tmp,
@@ -119,7 +140,6 @@ interface ExecuteArgs {
  */
 export const pushToExternalRemote = async (args: ExecuteArgs): Promise<GitOpResult> => {
   const t0 = Date.now();
-  const ref = args.ref ?? 'main';
   const { remote, encryptedSecret } = args;
 
   if (remote.authMethod === 'ssh-key') {
@@ -150,9 +170,10 @@ export const pushToExternalRemote = async (args: ExecuteArgs): Promise<GitOpResu
   try {
     workdir = await fs.mkdtemp(path.join(os.tmpdir(), `agora-remote-${remote.id}-`));
     const forgejoCloneUrl = buildForgejoCloneUrl(args.workspaceId, args.ownerUid, args.repoName);
+    const ref = args.ref ?? await resolveDefaultBranch(deps, forgejoCloneUrl, 'main');
     await deps.git.clone({
       fs: deps.fsAdapter, http: deps.http, dir: workdir, url: forgejoCloneUrl,
-      singleBranch: true, ref, depth: 50
+      singleBranch: true, ref, depth: 1
     });
 
     const externalUrl = remote.authMethod === 'token' && token
@@ -181,7 +202,6 @@ export const pushToExternalRemote = async (args: ExecuteArgs): Promise<GitOpResu
  */
 export const pullFromExternalRemote = async (args: ExecuteArgs): Promise<GitOpResult> => {
   const t0 = Date.now();
-  const ref = args.ref ?? 'main';
   const { remote, encryptedSecret } = args;
 
   if (remote.authMethod === 'ssh-key') {
@@ -215,9 +235,14 @@ export const pullFromExternalRemote = async (args: ExecuteArgs): Promise<GitOpRe
       ? buildAuthenticatedHttpsUrl(remote.url, token)
       : remote.url;
 
+    const ref = args.ref ?? await resolveDefaultBranch(deps, externalUrl, 'main');
+
+    // depth:1 + singleBranch: clone shallow del tip. isomorphic-git bufferea el
+    // packfile en heap; un depth alto en repos grandes revienta los 512 MiB de
+    // Cloud Run (OOM → container killed → request sin respuesta ni CORS).
     await deps.git.clone({
       fs: deps.fsAdapter, http: deps.http, dir: workdir, url: externalUrl,
-      singleBranch: true, ref, depth: 50
+      singleBranch: true, ref, depth: 1
     });
 
     const forgejoUrl = buildForgejoCloneUrl(args.workspaceId, args.ownerUid, args.repoName);
