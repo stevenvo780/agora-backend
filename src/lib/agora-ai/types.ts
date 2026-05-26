@@ -102,6 +102,12 @@ export interface AgentRun {
   rollback?: AgentRollbackAction[];
   /** True cuando se cortó por timeout/budget antes de la respuesta natural. */
   truncated?: boolean;
+  /**
+   * Por qué se truncó, cuando `truncated` es true. `time` = budget de tiempo del
+   * servidor; `output` = se agotaron las continuaciones tras el límite de tokens
+   * de salida del modelo. El cliente lo usa para mostrar el mensaje correcto.
+   */
+  truncationReason?: 'time' | 'output';
   /** Tokens y costo agregados de todas las llamadas al provider. */
   usage?: AgentUsageStats;
 }

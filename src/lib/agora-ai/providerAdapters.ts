@@ -548,6 +548,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   let iterations = 0;
   let pendingConfirmation: AgentRun['pendingConfirmation'];
   let truncated = false;
+  let truncationReason: AgentRun['truncationReason'];
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
@@ -558,6 +559,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
       truncated = true;
+      truncationReason = 'time';
       finalReply = finalReply || `Se interrumpió la ejecución para no exceder el presupuesto de tiempo (iter ${iterations - 1}/${MAX_AGENT_ITERATIONS}).`;
       break;
     }
@@ -632,6 +634,9 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
         continue;
       }
       truncated = true;
+      // Si paramos porque se agotó el budget de tiempo (no el cap de output),
+      // la razón real es el tiempo; el cliente muestra el mensaje acorde.
+      truncationReason = budgetWillExpire(options.executionContext) ? 'time' : 'output';
       if (!finalReply.trim()) {
         finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
       }
@@ -713,7 +718,9 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   }
 
   if (!finalReply) {finalReply = (typeof truncated !== 'undefined' && truncated)
-    ? 'La ejecución del agente fue truncada por presupuesto de tiempo.'
+    ? (truncationReason === 'output'
+      ? 'La respuesta fue cortada por el límite de tokens de salida del modelo.'
+      : 'La ejecución del agente fue truncada por presupuesto de tiempo.')
     : 'Se completó la ejecución del agente.';}
 
   await emitStep(createStep({
@@ -729,6 +736,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     finalReply,
     rollback,
     truncated: typeof truncated !== 'undefined' && truncated ? true : undefined,
+    ...(truncated && truncationReason ? { truncationReason } : {}),
     usage: typeof usage !== 'undefined' && Object.keys(usage).length ? usage : undefined
   };
 }
@@ -768,6 +776,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   let iterations = 0;
   let pendingConfirmation: AgentRun['pendingConfirmation'];
   let truncated = false;
+  let truncationReason: AgentRun['truncationReason'];
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
@@ -778,6 +787,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
       truncated = true;
+      truncationReason = 'time';
       finalReply = finalReply || `Se interrumpió la ejecución para no exceder el presupuesto de tiempo (iter ${iterations - 1}/${MAX_AGENT_ITERATIONS}).`;
       break;
     }
@@ -878,6 +888,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
         continue;
       }
       truncated = true;
+      truncationReason = budgetWillExpire(options.executionContext) ? 'time' : 'output';
       if (!finalReply.trim()) {
         finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
       }
@@ -954,7 +965,9 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   }
 
   if (!finalReply) {finalReply = (typeof truncated !== 'undefined' && truncated)
-    ? 'La ejecución del agente fue truncada por presupuesto de tiempo.'
+    ? (truncationReason === 'output'
+      ? 'La respuesta fue cortada por el límite de tokens de salida del modelo.'
+      : 'La ejecución del agente fue truncada por presupuesto de tiempo.')
     : 'Se completó la ejecución del agente.';}
 
   await emitStep(createStep({
@@ -970,6 +983,7 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
     finalReply,
     rollback,
     truncated: typeof truncated !== 'undefined' && truncated ? true : undefined,
+    ...(truncated && truncationReason ? { truncationReason } : {}),
     usage: typeof usage !== 'undefined' && Object.keys(usage).length ? usage : undefined
   };
 }
@@ -1001,6 +1015,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   let iterations = 0;
   let pendingConfirmation: AgentRun['pendingConfirmation'];
   let truncated = false;
+  let truncationReason: AgentRun['truncationReason'];
   const usage: AgentUsageStats = {};
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
@@ -1011,6 +1026,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
       truncated = true;
+      truncationReason = 'time';
       finalReply = finalReply || `Se interrumpió la ejecución para no exceder el presupuesto de tiempo (iter ${iterations - 1}/${MAX_AGENT_ITERATIONS}).`;
       break;
     }
@@ -1088,6 +1104,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
         continue;
       }
       truncated = true;
+      truncationReason = budgetWillExpire(options.executionContext) ? 'time' : 'output';
       if (!finalReply.trim()) {
         finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
       }
@@ -1156,7 +1173,9 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   }
 
   if (!finalReply) {finalReply = (typeof truncated !== 'undefined' && truncated)
-    ? 'La ejecución del agente fue truncada por presupuesto de tiempo.'
+    ? (truncationReason === 'output'
+      ? 'La respuesta fue cortada por el límite de tokens de salida del modelo.'
+      : 'La ejecución del agente fue truncada por presupuesto de tiempo.')
     : 'Se completó la ejecución del agente.';}
 
   await emitStep(createStep({
@@ -1172,6 +1191,7 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
     finalReply,
     rollback,
     truncated: typeof truncated !== 'undefined' && truncated ? true : undefined,
+    ...(truncated && truncationReason ? { truncationReason } : {}),
     usage: typeof usage !== 'undefined' && Object.keys(usage).length ? usage : undefined
   };
 }

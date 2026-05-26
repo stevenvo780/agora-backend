@@ -15,7 +15,41 @@ import {
   type OutputContinueState
 } from '../src/lib/agora-ai/autonomy.ts';
 import { runProviderConversation } from '../src/lib/agora-ai/providerAdapters.ts';
+import { env } from '../src/lib/env.ts';
 import type { AgentExecutionContext, ChatMessage } from '../src/lib/agora-ai/types.ts';
+
+test('env: AGORA_AI_MAX_OUTPUT_CONTINUES sin setear → default 6 (no 0)', () => {
+  // Regresión: Number('') === 0 es finite y >= 0, así que el cap caía a 0 en
+  // producción (var no seteada) y el output-continue nunca se activaba.
+  const prev = process.env.AGORA_AI_MAX_OUTPUT_CONTINUES;
+  delete process.env.AGORA_AI_MAX_OUTPUT_CONTINUES;
+  try {
+    assert.equal(env.AGORA_AI_MAX_OUTPUT_CONTINUES(), 6);
+  } finally {
+    if (prev !== undefined) process.env.AGORA_AI_MAX_OUTPUT_CONTINUES = prev;
+  }
+});
+
+test('env: AGORA_AI_MAX_AUTO_CONTINUES sin setear → default 12 (no 0)', () => {
+  const prev = process.env.AGORA_AI_MAX_AUTO_CONTINUES;
+  delete process.env.AGORA_AI_MAX_AUTO_CONTINUES;
+  try {
+    assert.equal(env.AGORA_AI_MAX_AUTO_CONTINUES(), 12);
+  } finally {
+    if (prev !== undefined) process.env.AGORA_AI_MAX_AUTO_CONTINUES = prev;
+  }
+});
+
+test('env: AGORA_AI_MAX_OUTPUT_CONTINUES="0" explícito → 0 (deshabilitado a propósito)', () => {
+  const prev = process.env.AGORA_AI_MAX_OUTPUT_CONTINUES;
+  process.env.AGORA_AI_MAX_OUTPUT_CONTINUES = '0';
+  try {
+    assert.equal(env.AGORA_AI_MAX_OUTPUT_CONTINUES(), 0);
+  } finally {
+    if (prev !== undefined) process.env.AGORA_AI_MAX_OUTPUT_CONTINUES = prev;
+    else delete process.env.AGORA_AI_MAX_OUTPUT_CONTINUES;
+  }
+});
 
 test('shouldContinueOutput respeta el cap', () => {
   const state: OutputContinueState = { used: 0 };
@@ -118,6 +152,8 @@ test('OpenAI: agota el cap de continuaciones → marca truncated y conserva el t
     // 1 request inicial + 2 continuaciones = 3.
     assert.equal(mock.calls.length, 3);
     assert.equal(run.truncated, true);
+    // Se cortó por el cap de output, no por tiempo: la razón debe reflejarlo.
+    assert.equal(run.truncationReason, 'output');
     assert.equal(run.finalReply, 'chunkchunkchunk');
     assert.ok(!/Simplifica/.test(run.finalReply));
   } finally {
@@ -224,6 +260,7 @@ test('OpenAI: budget agotado en el corte → no continúa, marca truncated', asy
     // así que no debe haber requests y el run sale truncado.
     assert.equal(mock.calls.length, 0);
     assert.equal(run.truncated, true);
+    assert.equal(run.truncationReason, 'time');
   } finally {
     mock.restore();
   }

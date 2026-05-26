@@ -44,7 +44,9 @@ export const env = {
    * el budget de tiempo/tokens sigue mandando por encima de este cap.
    */
   AGORA_AI_MAX_AUTO_CONTINUES: () => {
-    const raw = Number(trim('AGORA_AI_MAX_AUTO_CONTINUES'));
+    const str = trim('AGORA_AI_MAX_AUTO_CONTINUES');
+    if (str === '') return 12;
+    const raw = Number(str);
     return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 12;
   },
 
@@ -57,7 +59,9 @@ export const env = {
    * El budget de tiempo manda por encima de este cap.
    */
   AGORA_AI_MAX_OUTPUT_CONTINUES: () => {
-    const raw = Number(trim('AGORA_AI_MAX_OUTPUT_CONTINUES'));
+    const str = trim('AGORA_AI_MAX_OUTPUT_CONTINUES');
+    if (str === '') return 6;
+    const raw = Number(str);
     return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 6;
   }
 } as const;
