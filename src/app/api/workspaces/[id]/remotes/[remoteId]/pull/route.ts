@@ -86,13 +86,17 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     const repoName = repoNameForWorkspace(workspaceId, ownerUid);
 
     const body = await req.json().catch(() => null);
-    const ref = typeof body === 'object' && body !== null && typeof (body as Record<string, unknown>).ref === 'string'
-      ? (body as Record<string, string>).ref
-      : undefined;
+    const bodyObj = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+    const ref = typeof bodyObj.ref === 'string' ? bodyObj.ref : undefined;
+    // `force` (alias `import`): sobrescribe el workspace con el contenido del
+    // remoto aunque no sea fast-forward. El import a workspace vacío se detecta
+    // solo; este flag es el override explícito para workspaces con historial.
+    const force = bodyObj.force === true || bodyObj.import === true;
 
     const result = await pullFromExternalRemote({
       workspaceId, ownerUid, repoName, remote, encryptedSecret,
-      ...(ref !== undefined ? { ref } : {})
+      ...(ref !== undefined ? { ref } : {}),
+      ...(force ? { force: true } : {})
     });
 
     const now = Date.now();
@@ -113,7 +117,12 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
       }, { status });
     }
 
-    return NextResponse.json({ ok: true, ref: result.ref ?? null, durationMs: result.durationMs });
+    return NextResponse.json({
+      ok: true,
+      ref: result.ref ?? null,
+      imported: !!result.imported,
+      durationMs: result.durationMs
+    });
   } catch (e) {
     console.error('[remotes/pull] error', getErrorMessage(e));
     return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });

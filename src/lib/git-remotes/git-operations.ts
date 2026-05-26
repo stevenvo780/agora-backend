@@ -30,6 +30,9 @@ export interface GitOpResult {
   /** true cuando la operación quedó en estado "pendiente" porque falta soporte
    *  en runtime (ej. SSH sin git binary). El cliente debe ver el motivo. */
   notImplemented?: boolean;
+  /** true cuando el pull trajo el contenido del remoto a un workspace
+   *  vacío/sin historial (semántica de import: force-push del tree del remoto). */
+  imported?: boolean;
   error?: string;
 }
 
@@ -40,9 +43,10 @@ interface IsoGitModule {
   push: (args: Record<string, unknown>) => Promise<{ ok?: boolean; errors?: string[] }>;
   pull: (args: Record<string, unknown>) => Promise<void>;
   fetch: (args: Record<string, unknown>) => Promise<unknown>;
+  log: (args: Record<string, unknown>) => Promise<Array<{ commit?: { parent?: string[] } }>>;
   listBranches: (args: Record<string, unknown>) => Promise<string[]>;
   resolveRef: (args: Record<string, unknown>) => Promise<string>;
-  getRemoteInfo: (args: Record<string, unknown>) => Promise<{ HEAD?: string; refs?: Record<string, unknown> }>;
+  getRemoteInfo: (args: Record<string, unknown>) => Promise<{ HEAD?: string; refs?: { heads?: Record<string, unknown> } & Record<string, unknown> }>;
 }
 
 interface IsoHttpModule {
@@ -108,6 +112,13 @@ interface ExecuteArgs {
   encryptedSecret: string | null;
   /** Branch a sincronizar. Si no se pasa, se resuelve el HEAD real del remote. */
   ref?: string;
+  /**
+   * Override explícito del caller: forzar la traída del contenido del remoto
+   * aunque no sea fast-forward (semántica de import). Cuando no se pasa, el
+   * import se detecta automáticamente si el repo Forgejo del workspace está
+   * vacío o sólo tiene el commit auto-init (sin historial común).
+   */
+  force?: boolean;
 }
 
 /**
@@ -127,6 +138,71 @@ const resolveDefaultBranch = async (
     return short || fallback;
   } catch {
     return fallback;
+  }
+};
+
+const isNotFastForwardError = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  const reason = (err as { data?: { reason?: unknown } }).data?.reason;
+  if (code === 'PushRejectedError' && reason === 'not-fast-forward') return true;
+  const msg = err instanceof Error ? err.message : '';
+  return /not a simple fast-forward/i.test(msg);
+};
+
+/**
+ * Decide si el repo Forgejo del workspace es "importable": vacío (sin commits en
+ * la branch destino) o con sólo el commit auto-init (Forgejo crea los repos con
+ * `auto_init:true`, dejando un único commit raíz con el README seed). En ambos
+ * casos no hay historial del usuario que perder, así que traer el contenido del
+ * remoto (force-push del tree) es seguro y es exactamente la semántica de import.
+ *
+ * Con historial real (>1 commit, o commit con padres) NO es importable: forzar
+ * borraría trabajo del usuario. En ese caso el caller debe decidir explícitamente.
+ *
+ * Usa `depth:1`/`singleBranch` para no traer el packfile completo (evita el OOM
+ * que ya se arregló en el clone del remoto).
+ */
+const isForgejoBranchImportEligible = async (
+  deps: IsoGitDeps,
+  forgejoUrl: string,
+  branch: string
+): Promise<boolean> => {
+  let info: { refs?: { heads?: Record<string, unknown> } & Record<string, unknown> };
+  try {
+    info = await deps.git.getRemoteInfo({ http: deps.http, url: forgejoUrl });
+  } catch {
+    // Si no podemos inspeccionar el destino, no asumimos import: fail-safe.
+    return false;
+  }
+  const heads = (info.refs?.heads ?? {}) as Record<string, unknown>;
+  const headNames = Object.keys(heads);
+  // Repo totalmente vacío (Forgejo sin auto_init) → importable.
+  if (headNames.length === 0) return true;
+  if (!(branch in heads)) {
+    // La branch destino no existe aún (pero hay otras). Importable a esa branch.
+    return true;
+  }
+
+  // La branch existe: clonamos shallow para contar commits sin traer todo.
+  let probeDir: string | null = null;
+  try {
+    probeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agora-probe-'));
+    await deps.git.clone({
+      fs: deps.fsAdapter, http: deps.http, dir: probeDir, url: forgejoUrl,
+      singleBranch: true, ref: branch, depth: 2
+    });
+    const history = await deps.git.log({ fs: deps.fsAdapter, dir: probeDir, ref: branch, depth: 2 });
+    if (history.length === 0) return true;
+    if (history.length > 1) return false;
+    // Exactamente un commit: importable sólo si es un commit raíz (auto-init),
+    // i.e. sin padres. Un único commit con padres sería historial truncado por depth.
+    const parents = history[0]?.commit?.parent ?? [];
+    return parents.length === 0;
+  } catch {
+    return false;
+  } finally {
+    if (probeDir) await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
   }
 };
 
@@ -246,14 +322,39 @@ export const pullFromExternalRemote = async (args: ExecuteArgs): Promise<GitOpRe
     });
 
     const forgejoUrl = buildForgejoCloneUrl(args.workspaceId, args.ownerUid, args.repoName);
-    const pushRes = await deps.git.push({
-      fs: deps.fsAdapter, http: deps.http, dir: workdir, url: forgejoUrl, ref, remoteRef: ref, force: false
+
+    const pushOnce = async (force: boolean) => deps.git.push({
+      fs: deps.fsAdapter, http: deps.http, dir: workdir, url: forgejoUrl, ref, remoteRef: ref, force
     });
+
+    let imported = false;
+    let pushRes: { ok?: boolean; errors?: string[] } | undefined;
+    try {
+      pushRes = await pushOnce(false);
+    } catch (pushErr) {
+      // Caso import: el repo del workspace no comparte historia con el remoto
+      // (vacío o sólo el commit auto-init de Forgejo) → no es fast-forward.
+      // Traemos el contenido del remoto force-pusheando, en vez de fallar.
+      if (!isNotFastForwardError(pushErr)) throw pushErr;
+      const eligible = args.force === true
+        || await isForgejoBranchImportEligible(deps, forgejoUrl, ref);
+      if (!eligible) {
+        return {
+          ok: false,
+          durationMs: Date.now() - t0,
+          error: 'El workspace ya tiene historial propio que no comparte ancestro con el remoto. ' +
+            'Para sobrescribirlo con el contenido del remoto reenviá la operación con force:true.'
+        };
+      }
+      pushRes = await pushOnce(true);
+      imported = true;
+    }
+
     if (pushRes && Array.isArray(pushRes.errors) && pushRes.errors.length > 0) {
       return { ok: false, durationMs: Date.now() - t0, error: pushRes.errors.join('; ') };
     }
     const sha = await deps.git.resolveRef({ fs: deps.fsAdapter, dir: workdir, ref }).catch(() => undefined);
-    return { ok: true, ref: sha, durationMs: Date.now() - t0 };
+    return { ok: true, ref: sha, durationMs: Date.now() - t0, ...(imported ? { imported: true } : {}) };
   } catch (e) {
     return { ok: false, durationMs: Date.now() - t0, error: sanitizeError(e, token) };
   } finally {
