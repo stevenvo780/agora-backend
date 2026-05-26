@@ -8,8 +8,11 @@ import { isCacheableAgentTool, isDestructiveAgentTool } from '@/lib/agora-ai/too
 import {
   classifyTextOnlyTurn,
   isPermissionOnlyMessage,
+  shouldContinueOutput,
   AUTO_CONTINUE_PROMPT,
-  AUTO_CONFIRM_PROMPT
+  AUTO_CONFIRM_PROMPT,
+  OUTPUT_CONTINUE_PROMPT,
+  type OutputContinueState
 } from '@/lib/agora-ai/autonomy';
 import { env } from '@/lib/env';
 import type {
@@ -105,6 +108,8 @@ interface ProviderRunOptions {
   auxModel?: string;
   /** Cap de auto-continues por request. Default desde env (12). */
   maxAutoContinues?: number;
+  /** Cap de continuaciones de generación por truncación de output. Default env (6). */
+  maxOutputContinues?: number;
 }
 
 /**
@@ -547,6 +552,8 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
   const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
+  const maxOutputContinues = options.maxOutputContinues ?? env.AGORA_AI_MAX_OUTPUT_CONTINUES();
+  const outputContinue: OutputContinueState = { used: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -612,7 +619,22 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
     }));
 
     if (choice?.finish_reason === 'length') {
-      finalReply = visibleContent || 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
+      finalReply += visibleContent;
+      // Continuamos la generación si aún hay budget de tiempo y de continuaciones.
+      if (
+        shouldContinueOutput(outputContinue, maxOutputContinues)
+        && !budgetWillExpire(options.executionContext)
+      ) {
+        outputContinue.used += 1;
+        await emitStatus(`Respuesta larga: continuando generación (${outputContinue.used}/${maxOutputContinues})…`);
+        messages.push({ role: 'assistant', content: rawContent || visibleContent || '' });
+        messages.push({ role: 'user', content: OUTPUT_CONTINUE_PROMPT });
+        continue;
+      }
+      truncated = true;
+      if (!finalReply.trim()) {
+        finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
+      }
       break;
     }
     if (!toolCalls.length || options.mode !== 'agent') {
@@ -623,10 +645,14 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
         autoContinue.noProgressStreak += 1;
         messages.push({ role: 'assistant', content: rawContent || visibleContent || '' });
         messages.push({ role: 'user', content: continuation });
-        finalReply = visibleContent || finalReply;
+        finalReply = outputContinue.used > 0 ? finalReply + visibleContent : (visibleContent || finalReply);
         continue;
       }
-      finalReply = visibleContent || finalReply || 'Listo.';
+      // Si hubo continuaciones de output, el texto previo ya vive en finalReply:
+      // concatenamos la cola en vez de reemplazar.
+      finalReply = outputContinue.used > 0
+        ? (finalReply + visibleContent) || 'Listo.'
+        : visibleContent || finalReply || 'Listo.';
       break;
     }
     // El agente llamó tools: hay progreso real, reseteamos el contador de stall.
@@ -746,6 +772,8 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
   const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
+  const maxOutputContinues = options.maxOutputContinues ?? env.AGORA_AI_MAX_OUTPUT_CONTINUES();
+  const outputContinue: OutputContinueState = { used: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -834,7 +862,25 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
     }
 
     if (data.stop_reason === 'max_tokens') {
-      finalReply = visibleContent || 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
+      finalReply += visibleContent;
+      if (
+        shouldContinueOutput(outputContinue, maxOutputContinues)
+        && !budgetWillExpire(options.executionContext)
+      ) {
+        outputContinue.used += 1;
+        await emitStatus(`Respuesta larga: continuando generación (${outputContinue.used}/${maxOutputContinues})…`);
+        // Solo re-inyectamos los bloques de texto (no thinking): un bloque
+        // thinking truncado por max_tokens rompe la validación del API, y la
+        // continuidad de razonamiento no aporta para terminar un texto cortado.
+        const textBlocks = blocks.filter((b): b is Extract<AnthropicBlock, { type: 'text' }> => b.type === 'text');
+        messages.push({ role: 'assistant', content: textBlocks.length ? textBlocks : (visibleContent || '') });
+        messages.push({ role: 'user', content: OUTPUT_CONTINUE_PROMPT });
+        continue;
+      }
+      truncated = true;
+      if (!finalReply.trim()) {
+        finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
+      }
       break;
     }
 
@@ -851,10 +897,12 @@ async function runAnthropic(options: ProviderRunOptions): Promise<AgentRun> {
         // Reusamos los blocks verbatim para mantener continuidad de razonamiento.
         messages.push({ role: 'assistant', content: blocks.length ? blocks : (visibleContent || '') });
         messages.push({ role: 'user', content: continuation });
-        finalReply = visibleContent || finalReply;
+        finalReply = outputContinue.used > 0 ? finalReply + visibleContent : (visibleContent || finalReply);
         continue;
       }
-      finalReply = visibleContent || finalReply || 'Listo.';
+      finalReply = outputContinue.used > 0
+        ? (finalReply + visibleContent) || 'Listo.'
+        : visibleContent || finalReply || 'Listo.';
       break;
     }
     autoContinue.noProgressStreak = 0;
@@ -957,6 +1005,8 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
   const toolCache = new Map<string, AgentToolExecutionResult>();
   const maxAutoContinues = options.maxAutoContinues ?? env.AGORA_AI_MAX_AUTO_CONTINUES();
   const autoContinue: AutoContinueState = { used: 0, noProgressStreak: 0 };
+  const maxOutputContinues = options.maxOutputContinues ?? env.AGORA_AI_MAX_OUTPUT_CONTINUES();
+  const outputContinue: OutputContinueState = { used: 0 };
 
   for (iterations = 1; iterations <= MAX_AGENT_ITERATIONS; iterations += 1) {
     if (budgetWillExpire(options.executionContext)) {
@@ -1023,6 +1073,27 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
         args: p.functionCall?.args || {}
       }));
 
+    // Truncación por límite de salida (solo si no hubo function calls; si las
+    // hay, el loop de tools sigue su curso normal).
+    if (finishReason === 'MAX_TOKENS' && !toolCalls.length) {
+      finalReply += visibleContent;
+      if (
+        shouldContinueOutput(outputContinue, maxOutputContinues)
+        && !budgetWillExpire(options.executionContext)
+      ) {
+        outputContinue.used += 1;
+        await emitStatus(`Respuesta larga: continuando generación (${outputContinue.used}/${maxOutputContinues})…`);
+        contents.push({ role: 'model', parts: [{ text: visibleContent || '' }] });
+        contents.push({ role: 'user', parts: [{ text: OUTPUT_CONTINUE_PROMPT }] });
+        continue;
+      }
+      truncated = true;
+      if (!finalReply.trim()) {
+        finalReply = 'La respuesta fue cortada por el límite de tokens. Simplifica tu solicitud.';
+      }
+      break;
+    }
+
     if (!toolCalls.length || options.mode !== 'agent') {
       const continuation = await decideAutoContinue(
         options, autoContinue, visibleContent, maxAutoContinues, emitStatus
@@ -1031,10 +1102,12 @@ async function runGemini(options: ProviderRunOptions): Promise<AgentRun> {
         autoContinue.noProgressStreak += 1;
         contents.push({ role: 'model', parts: parts.length ? (parts as Array<Record<string, unknown>>) : [{ text: visibleContent || '' }] });
         contents.push({ role: 'user', parts: [{ text: continuation }] });
-        finalReply = visibleContent || finalReply;
+        finalReply = outputContinue.used > 0 ? finalReply + visibleContent : (visibleContent || finalReply);
         continue;
       }
-      finalReply = visibleContent || finalReply || 'Listo.';
+      finalReply = outputContinue.used > 0
+        ? (finalReply + visibleContent) || 'Listo.'
+        : visibleContent || finalReply || 'Listo.';
       break;
     }
     autoContinue.noProgressStreak = 0;

@@ -64,6 +64,37 @@ export const AUTO_CONFIRM_PROMPT =
   'Sí, continúa. Procede con la acción que propusiste y completa la tarea sin '
   + 'pedir más confirmaciones; usa las herramientas necesarias ahora.';
 
+/**
+ * Mensaje user inyectado cuando la RESPUESTA del modelo se truncó por el límite
+ * de tokens de salida. Le pedimos retomar exactamente donde quedó, sin repetir
+ * ni reabrir lo ya dicho, para que el cliente reciba un texto continuo.
+ */
+export const OUTPUT_CONTINUE_PROMPT =
+  'Tu respuesta anterior se cortó por el límite de tokens de salida. Continúa '
+  + 'EXACTAMENTE desde donde quedaste, sin repetir nada de lo ya escrito, sin '
+  + 'reintroducir el tema y sin frases de transición como "continuando" o '
+  + '"como decía". Retoma a media palabra/frase si es necesario.';
+
+/**
+ * Estado de las continuaciones de generación dentro de un run. Acota cuántas
+ * veces re-pedimos al modelo que siga generando tras una truncación por output.
+ */
+export interface OutputContinueState {
+  used: number;
+}
+
+/**
+ * Decide si continuar la generación tras una truncación por límite de salida.
+ * Devuelve true si quedan continuaciones disponibles. El respeto del budget de
+ * tiempo lo chequea el loop (con `budgetWillExpire`) antes de re-iterar.
+ */
+export function shouldContinueOutput(
+  state: OutputContinueState,
+  maxOutputContinues: number
+): boolean {
+  return state.used < maxOutputContinues;
+}
+
 interface ClassifierClient {
   /** Llamada single-turn barata al auxModel. Devuelve texto crudo. */
   classify: (prompt: string) => Promise<string>;

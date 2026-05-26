@@ -46,6 +46,19 @@ export const env = {
   AGORA_AI_MAX_AUTO_CONTINUES: () => {
     const raw = Number(trim('AGORA_AI_MAX_AUTO_CONTINUES'));
     return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 12;
+  },
+
+  /**
+   * Máximo de continuaciones de GENERACIÓN cuando el modelo trunca su propia
+   * respuesta por el límite de tokens de salida (`finish_reason=length` /
+   * `stop_reason=max_tokens` / `finishReason=MAX_TOKENS`). Distinto del
+   * auto-continue de "announce": acá el modelo SÍ estaba generando la respuesta
+   * final y se quedó sin tokens; re-inyectamos lo parcial y le pedimos seguir.
+   * El budget de tiempo manda por encima de este cap.
+   */
+  AGORA_AI_MAX_OUTPUT_CONTINUES: () => {
+    const raw = Number(trim('AGORA_AI_MAX_OUTPUT_CONTINUES'));
+    return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 6;
   }
 } as const;
 
