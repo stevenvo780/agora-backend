@@ -1,7 +1,7 @@
 /**
  * Settings del agente IA por usuario en Firestore.
  *
- *   users/{uid}/agentSettings/config
+ *   users/{uid}  →  campo mapa `agentSettings`
  *
  * Controlan la autonomía del agente:
  *   - mainModel: modelo para el trabajo real (override del default del provider).
@@ -68,16 +68,16 @@ export async function getAgentSettings(uid: string): Promise<AgentSettings | nul
 
   let value: AgentSettings | null = null;
   try {
-    const snap = await adminDb
-      .collection('users').doc(uid)
-      .collection('agentSettings').doc('config')
-      .get();
+    const snap = await adminDb.collection('users').doc(uid).get();
     if (snap.exists) {
-      const parsed = parseAgentSettings(snap.data());
-      if (parsed.ok) {
-        value = parsed.value;
-      } else {
-        console.warn('[agentSettings] doc inválido, ignorado:', parsed.error);
+      const raw = snap.data()?.['agentSettings'];
+      if (raw !== undefined) {
+        const parsed = parseAgentSettings(raw);
+        if (parsed.ok) {
+          value = parsed.value;
+        } else {
+          console.warn('[agentSettings] campo inválido, ignorado:', parsed.error);
+        }
       }
     }
   } catch (error) {
