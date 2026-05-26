@@ -27,6 +27,7 @@
     "firebase-admin": "^13.7.0",
     "helmet": "^8.1.0",
     "ignore": "^7.0.5",
+    "isomorphic-git": "^1.38.2",
     "mammoth": "^1.11.0",
     "mercadopago": "^2.12.0",
     "pdf-parse": "^1.1.4",
