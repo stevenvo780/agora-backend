@@ -20,6 +20,7 @@ import fs from 'node:fs/promises';
 import { getForgejoApiUrl, getForgejoOrg } from '@/lib/forgejo';
 import { env } from '@/lib/env';
 import { decryptSecret, buildAuthenticatedHttpsUrl, redactSecretFromError } from './secret-vault';
+import { materializeRepoAsDocuments, type MaterializeResult } from './materialize-docs';
 import type { WorkspaceRemoteRecord } from './types';
 
 export interface GitOpResult {
@@ -33,6 +34,9 @@ export interface GitOpResult {
   /** true cuando el pull trajo el contenido del remoto a un workspace
    *  vacío/sin historial (semántica de import: force-push del tree del remoto). */
   imported?: boolean;
+  /** Resumen de la materialización de archivos del repo como documentos del
+   *  workspace (Firestore + MinIO). Es lo que hace que el user VEA los archivos. */
+  materialized?: MaterializeResult;
   error?: string;
 }
 
@@ -353,8 +357,29 @@ export const pullFromExternalRemote = async (args: ExecuteArgs): Promise<GitOpRe
     if (pushRes && Array.isArray(pushRes.errors) && pushRes.errors.length > 0) {
       return { ok: false, durationMs: Date.now() - t0, error: pushRes.errors.join('; ') };
     }
+
+    // Lo que el user realmente quiere: que los archivos del repo APAREZCAN como
+    // documentos del workspace. El push a Forgejo es la capa git; acá
+    // materializamos cada archivo del repo clonado (en `workdir`, aún sin borrar)
+    // como doc Firestore + blob MinIO usando el path canónico de creación.
+    let materialized: MaterializeResult | undefined;
+    try {
+      materialized = await materializeRepoAsDocuments(workdir, {
+        workspaceId: args.workspaceId,
+        ownerUid: args.ownerUid
+      });
+    } catch (matErr) {
+      console.warn('[remotes/pull] materialización de docs falló', sanitizeError(matErr, token));
+    }
+
     const sha = await deps.git.resolveRef({ fs: deps.fsAdapter, dir: workdir, ref }).catch(() => undefined);
-    return { ok: true, ref: sha, durationMs: Date.now() - t0, ...(imported ? { imported: true } : {}) };
+    return {
+      ok: true,
+      ref: sha,
+      durationMs: Date.now() - t0,
+      ...(imported ? { imported: true } : {}),
+      ...(materialized ? { materialized } : {})
+    };
   } catch (e) {
     return { ok: false, durationMs: Date.now() - t0, error: sanitizeError(e, token) };
   } finally {

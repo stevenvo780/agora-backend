@@ -121,6 +121,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
       ok: true,
       ref: result.ref ?? null,
       imported: !!result.imported,
+      materialized: result.materialized ?? null,
       durationMs: result.durationMs
     });
   } catch (e) {
