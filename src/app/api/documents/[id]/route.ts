@@ -231,6 +231,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     }
 }
 
+export const PATCH = PUT;
+
 export async function GET(req: NextRequest, context: RouteContext) {
     try {
         const auth = await requireAuth(req);
