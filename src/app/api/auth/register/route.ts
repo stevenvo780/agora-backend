@@ -4,51 +4,48 @@ import { adminDb, adminAuth } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { hashPassword } from '@/lib/crypto';
 import { ensureFirebaseAuthUser, normalizeEmailAddress } from '@/lib/custom-auth';
-import { getErrorMessage } from '@/lib/error-utils';
+import { getErrorCode, getErrorMessage } from '@/lib/error-utils';
 import { createLocalDevAuthToken, shouldUseLocalDevAuthFallback } from '@/lib/local-dev-auth';
+import { checkAuthRateLimit, recordAuthAttempt } from '@/lib/auth-rate-limit';
 
-// In-memory rate limiter (simple implementation)
-const rateLimit = new Map<string, { count: number; expires: number }>();
-const LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_ATTEMPTS = 3; // Stricter for register
-const MAX_RATE_LIMIT_ENTRIES = 10_000; // prevent unbounded growth under DDoS
+const REGISTER_WINDOW_MS = 15 * 60 * 1000;
+const MAX_REGISTER_ATTEMPTS = 10;
 
-// Periodically evict expired entries. .unref() evita bloquear cierre del proceso.
-setInterval(() => {
-    const now = Date.now();
-    for (const [ip, record] of rateLimit) {
-        if (now > record.expires) rateLimit.delete(ip);
-    }
-}, LIMIT_WINDOW).unref();
+const FIREBASE_VALIDATION_CODES = new Set([
+    'auth/invalid-email',
+    'auth/invalid-password',
+    'auth/invalid-display-name',
+    'auth/email-already-exists'
+]);
 
-const checkRateLimit = (ip: string) => {
-    const now = Date.now();
-    const record = rateLimit.get(ip);
-    if (record) {
-        if (now > record.expires) {
-            rateLimit.delete(ip);
-        } else if (record.count >= MAX_ATTEMPTS) {
-            return false;
-        } else {
-            record.count++;
-            return true;
-        }
+const validationMessageFor = (code: string | undefined): string | null => {
+    switch (code) {
+        case 'auth/invalid-email':
+            return 'El correo electrónico no es válido';
+        case 'auth/invalid-password':
+            return 'La contraseña no cumple los requisitos mínimos';
+        case 'auth/email-already-exists':
+            return 'Ya existe una cuenta con este correo electrónico';
+        default:
+            return code && FIREBASE_VALIDATION_CODES.has(code)
+                ? 'Los datos proporcionados no son válidos'
+                : null;
     }
-    // Evict oldest entry if map is too large (DDoS protection)
-    if (rateLimit.size >= MAX_RATE_LIMIT_ENTRIES) {
-        const firstKey = rateLimit.keys().next().value;
-        if (firstKey !== undefined) rateLimit.delete(firstKey);
-    }
-    rateLimit.set(ip, { count: 1, expires: now + LIMIT_WINDOW });
-    return true;
 };
 
 export async function POST(req: NextRequest) {
     try {
-        const ip = req.headers.get('x-forwarded-for') || 'unknown';
-        if (!checkRateLimit(ip)) {
-            return NextResponse.json({ error: 'Too many attempts. Please try again later.' }, { status: 429 });
+        const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+        const limitKey = `register:${ip}`;
+        const limitOptions = { windowMs: REGISTER_WINDOW_MS, maxAttempts: MAX_REGISTER_ATTEMPTS };
+        const limit = await checkAuthRateLimit(limitKey, limitOptions);
+        if (!limit.ok) {
+            return NextResponse.json(
+                { error: 'Too many attempts. Please try again later.' },
+                { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
+            );
         }
+        await recordAuthAttempt(limitKey, limitOptions);
 
         let body: { email?: string; password?: string };
         try {
@@ -182,7 +179,12 @@ export async function POST(req: NextRequest) {
         }, { status: 201 });
 
     } catch (error: unknown) {
+        const validationMessage = validationMessageFor(getErrorCode(error));
+        if (validationMessage) {
+            console.warn('Register validation error:', getErrorCode(error));
+            return NextResponse.json({ error: validationMessage }, { status: 400 });
+        }
         console.error('Error creating user (custom auth):', getErrorMessage(error));
-        return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+        return NextResponse.json({ error: 'No se pudo crear la cuenta. Intenta de nuevo.' }, { status: 500 });
     }
 }
