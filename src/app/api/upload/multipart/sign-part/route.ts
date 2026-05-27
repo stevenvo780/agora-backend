@@ -31,6 +31,9 @@ const validatePathOwnership = async (
     storagePath: string,
     uid: string
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+    if (storagePath.includes('..')) {
+        return { ok: false, status: 403, error: 'Access denied: Invalid storage path' };
+    }
     if (storagePath.startsWith(`users/${uid}/`)) return { ok: true };
     const wsMatch = storagePath.match(/^workspaces\/([^/]+)\//);
     if (!wsMatch || !wsMatch[1]) {

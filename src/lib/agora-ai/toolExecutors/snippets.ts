@@ -144,6 +144,8 @@ async function importSnippetsFromUrl(call: AgentToolCall, ctx: AgentExecutionCon
   let parsed: URL;
   try { parsed = new URL(url); } catch { throw new Error(`URL inválida: ${url}`); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Solo http/https');
+  const blockedHost = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[0-1])\.|localhost$|0\.0\.0\.0$)/.test(parsed.hostname.toLowerCase());
+  if (blockedHost) throw new Error(`Host privado bloqueado: ${parsed.hostname}`);
   if (!confirmed) {
     return confirm(call, `¿Importar snippets desde ${parsed.host}? Devuelve un array JSON [{title, markdown, category?, description?}]`, { url });
   }
