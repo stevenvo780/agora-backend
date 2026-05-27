@@ -85,7 +85,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json() as { workspaceId?: unknown; state?: unknown };
+    const rawBody = await req.json().catch(() => null);
+    if (rawBody === null || typeof rawBody !== 'object') {
+      return NextResponse.json({ error: 'El cuerpo de la petición debe ser JSON válido' }, { status: 400 });
+    }
+    const body = rawBody as { workspaceId?: unknown; state?: unknown };
     const workspaceId = typeof body.workspaceId === 'string' && body.workspaceId.trim()
       ? body.workspaceId.trim()
       : PERSONAL_WORKSPACE_ID;

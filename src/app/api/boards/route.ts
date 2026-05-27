@@ -10,6 +10,10 @@ import { parseBoardCreatePayload, parseBoardPatchPayload, parseBoardDeletePayloa
 
 const DEFAULT_COLUMNS = ['Por hacer', 'En progreso', 'Hecho'];
 
+/** Firestore lanza gRPC NOT_FOUND (code 5) al hacer update() sobre un doc inexistente. */
+const isFirestoreNotFound = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && (error as { code?: number }).code === 5;
+
 enum BoardEntityType {
   Column = 'column',
   Card = 'card'
@@ -268,7 +272,7 @@ export async function POST(req: NextRequest) {
       const cardRef = boardRef.collection('cards').doc();
       const data = {
         title: title || 'Nueva tarjeta',
-        description: typeof body.description === 'string' ? body.description : undefined,
+        description: typeof body.description === 'string' ? body.description : null,
         columnId,
         order: typeof body.order === 'number' ? body.order : Date.now(),
         ownerId: auth.uid,
@@ -376,6 +380,9 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
   } catch (error: unknown) {
+    if (isFirestoreNotFound(error)) {
+      return NextResponse.json({ error: 'El elemento no existe' }, { status: 404 });
+    }
     console.error('Error updating board item:', error);
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -420,14 +427,24 @@ export async function DELETE(req: NextRequest) {
     const boardRef = await ensureBoard(resolvedWorkspaceId);
 
     if (type === BoardEntityType.Column) {
+      const columnRef = boardRef.collection('columns').doc(id);
+      const columnSnap = await columnRef.get();
+      if (!columnSnap.exists) {
+        return NextResponse.json({ error: 'La columna no existe' }, { status: 404 });
+      }
       await deleteCardsByColumn(boardRef, id);
-      await boardRef.collection('columns').doc(id).delete();
+      await columnRef.delete();
       await touchBoard(boardRef);
       return NextResponse.json({ status: 'deleted' });
     }
 
     if (type === BoardEntityType.Card) {
-      await boardRef.collection('cards').doc(id).delete();
+      const cardRef = boardRef.collection('cards').doc(id);
+      const cardSnap = await cardRef.get();
+      if (!cardSnap.exists) {
+        return NextResponse.json({ error: 'La tarjeta no existe' }, { status: 404 });
+      }
+      await cardRef.delete();
       await touchBoard(boardRef);
       return NextResponse.json({ status: 'deleted' });
     }

@@ -88,6 +88,18 @@ const validatePathOwnership = async (
     return { ok: true };
 };
 
+/**
+ * MinIO/S3 responde NoSuchUpload (HTTP 404) si el uploadId ya fue completado
+ * o nunca existió. No filtramos su mensaje crudo al cliente.
+ */
+const isMissingUploadError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null) return false;
+    const err = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+    return err.name === 'NoSuchUpload'
+        || err.Code === 'NoSuchUpload'
+        || err.$metadata?.httpStatusCode === 404;
+};
+
 const isMarkdownLike = (mimeType: string, name: string): boolean => {
     const lowerMime = mimeType.toLowerCase();
     const lowerName = name.toLowerCase();
@@ -119,6 +131,12 @@ export async function POST(req: NextRequest) {
         try {
             await completeMultipartUpload(storagePath, uploadId, parts);
         } catch (err) {
+            if (isMissingUploadError(err)) {
+                return NextResponse.json(
+                    { error: 'La subida ya fue completada o no existe' },
+                    { status: 409 }
+                );
+            }
             await abortMultipartUpload(storagePath, uploadId).catch(() => undefined);
             throw err;
         }
