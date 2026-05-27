@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
         const limit = await checkAuthRateLimit(limitKey, limitOptions);
         if (!limit.ok) {
             return NextResponse.json(
-                { error: 'Too many attempts. Please try again later.' },
+                { error: 'Demasiados intentos. Intentá de nuevo más tarde.' },
                 { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
             );
         }
@@ -51,18 +51,18 @@ export async function POST(req: NextRequest) {
         try {
             body = await req.json();
         } catch {
-            return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+            return NextResponse.json({ error: 'Cuerpo JSON inválido' }, { status: 400 });
         }
         const { email, password } = body;
         const rawEmail = typeof email === 'string' ? email.trim() : '';
         const normalizedEmail = rawEmail ? normalizeEmailAddress(rawEmail) : '';
 
         if (!normalizedEmail || !password) {
-            return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
+            return NextResponse.json({ error: 'Email y contraseña son requeridos' }, { status: 400 });
         }
 
         if (password.length < 6) {
-            return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400 });
+            return NextResponse.json({ error: 'La contraseña debe tener al menos 6 caracteres' }, { status: 400 });
         }
 
         const usersRef = adminDb.collection('users');
@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
             });
         } catch (error: unknown) {
             if (getErrorMessage(error) === 'USER_ALREADY_EXISTS') {
-                return NextResponse.json({ error: 'User already exists' }, { status: 409 });
+                return NextResponse.json({ error: 'Ya existe una cuenta con este correo' }, { status: 409 });
             }
             throw error;
         }

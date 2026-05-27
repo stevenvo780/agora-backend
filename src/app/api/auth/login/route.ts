@@ -17,7 +17,7 @@ const clientIp = (req: NextRequest) =>
 
 const tooManyAttempts = (retryAfterSeconds: number) =>
     NextResponse.json(
-        { error: 'Too many attempts. Please try again later.' },
+        { error: 'Demasiados intentos. Intentá de nuevo más tarde.' },
         { status: 429, headers: { 'Retry-After': String(retryAfterSeconds) } }
     );
 
@@ -29,14 +29,14 @@ export async function POST(req: NextRequest) {
         try {
             body = await req.json();
         } catch {
-            return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+            return NextResponse.json({ error: 'Cuerpo JSON inválido' }, { status: 400 });
         }
         const { email, password } = body;
         const rawEmail = typeof email === 'string' ? email.trim() : '';
         const normalizedEmail = rawEmail ? normalizeEmailAddress(rawEmail) : '';
 
         if (!normalizedEmail || !password) {
-            return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
+            return NextResponse.json({ error: 'Email y contraseña son requeridos' }, { status: 400 });
         }
 
         const limitKey = `login:${ip}:${normalizedEmail}`;
@@ -48,13 +48,13 @@ export async function POST(req: NextRequest) {
 
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
             await recordAuthAttempt(limitKey, limitOptions);
-            return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+            return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
         const userLookup = await findUserByEmail(rawEmail || normalizedEmail);
         if (!userLookup) {
             await recordAuthAttempt(limitKey, limitOptions);
-            return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+            return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
         const userDocRef = userLookup.ref;
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
 
         if (!verification.ok) {
              await recordAuthAttempt(limitKey, limitOptions);
-             return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+             return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
         if (verification.needsUpgrade && verification.newHash) {
