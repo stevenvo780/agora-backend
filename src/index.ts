@@ -97,7 +97,7 @@ await mountNextStyleApiRoutes(app);
 
 // B6: catch-all para /api/* — devuelve JSON en lugar del HTML por defecto de Express.
 // Se registra DESPUÉS de mountNextStyleApiRoutes para no interceptar rutas existentes.
-app.all('/api/*splat', (_req, res) => {
+app.all('/api/*', (_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
