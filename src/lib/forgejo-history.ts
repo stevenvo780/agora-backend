@@ -204,13 +204,21 @@ export const parseUnifiedDiff = (raw: string): { files: DiffFile[]; truncated: b
   return { files, truncated };
 };
 
+/**
+ * El raw diff/patch lo sirve Forgejo por la ruta WEB
+ * (`{host}/{owner}/{repo}/compare/{base}...{head}.diff`), NO por `/api/v1`.
+ * Pegarle `.diff` a `/api/v1/.../compare/{base}...{head}` hace que Forgejo
+ * intente resolver `{head}.diff` como ref → 404. Usamos la ruta web con el
+ * mismo admin token para obtener el unified diff que `parseUnifiedDiff` espera.
+ */
 export const compareRefs = async (
   repoFullName: string,
   base: string,
   head: string
 ): Promise<DiffResponse | null> => {
-  const url = `${apiUrl()}/api/v1/repos/${repoFullName}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}.diff`;
-  const r = await fetch(url, {
+  const range = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+  const webUrl = `${apiUrl()}/${repoFullName}/compare/${range}.diff`;
+  const r = await fetch(webUrl, {
     headers: { Accept: 'text/plain', Authorization: `token ${adminToken()}` }
   });
   if (r.status === 404) return null;

@@ -22,7 +22,8 @@ import {
   createAgentChat,
   deriveChatTitleFromContent,
   getAgentChat,
-  patchAgentChat
+  patchAgentChat,
+  ChatLimitExceededError
 } from '@/lib/agora-ai/chatPersistence';
 import {
   readDecryptedAgentSecret,
@@ -148,6 +149,18 @@ export async function POST(request: NextRequest) {
   // expuesto vía export para tests/clientes.
   void MAX_MESSAGES_BYTES;
 
+  // C5a: validar que el último mensaje de usuario tenga contenido no vacío
+  // ANTES de crear cualquier documento en Firestore. Un mensaje vacío no tiene
+  // sentido semántico y era la causa de chats fantasma con title "Nuevo chat"
+  // y cero mensajes persistidos.
+  const lastUserMessageForValidation = [...messages].reverse().find((m) => m.role === 'user');
+  if (!lastUserMessageForValidation || !lastUserMessageForValidation.content?.trim()) {
+    return new Response(JSON.stringify({ error: 'El mensaje del usuario no puede estar vacío' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   // Si el cliente no manda key explícita, intentamos descifrar la guardada
   // server-side para este provider. Nunca persistimos el plaintext.
   if (!apiKey && (AGENT_PROVIDER_VALUES as readonly string[]).includes(provider)) {
@@ -184,6 +197,15 @@ export async function POST(request: NextRequest) {
       activeChatId = created.id;
       isNewChat = true;
     } catch (error) {
+      // C5b: si el usuario alcanzó el cap de chats, rechazar con 429 antes
+      // de abrir el stream. Para otros errores de Firestore, degradar
+      // graciosamente (stream sin persistencia).
+      if (error instanceof ChatLimitExceededError) {
+        return new Response(JSON.stringify({ error: error.message, reason: 'chat-limit-exceeded', limit: error.limit }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       console.warn('[agora-ai/stream] no se pudo crear chat persistido:', error instanceof Error ? error.message : error);
     }
   }

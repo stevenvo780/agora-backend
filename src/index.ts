@@ -95,6 +95,12 @@ app.use(['/api/auth', '/api/payments', '/api/agora-ai'], publicApiRateLimit);
 auditOnce();
 await mountNextStyleApiRoutes(app);
 
+// B6: catch-all para /api/* — devuelve JSON en lugar del HTML por defecto de Express.
+// Se registra DESPUÉS de mountNextStyleApiRoutes para no interceptar rutas existentes.
+app.all('/api/*splat', (_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 const PORT = Number(process.env.PORT || 8080);
 app.listen(PORT, () => {
   console.log(`[agora-backend] Listening on ${PORT}`);

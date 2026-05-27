@@ -28,11 +28,19 @@ const BARE_API_ROUTES_SUNSET = process.env.BARE_API_ROUTES_SUNSET || '2026-08-01
 export const getBareApiRouteDeprecationHeaders = (
   canonicalPath: string,
   sunset = BARE_API_ROUTES_SUNSET
-): Record<string, string> => ({
-  Deprecation: 'true',
-  Sunset: sunset,
-  Link: `<${canonicalPath}>; rel="canonical"`
-});
+): Record<string, string> => {
+  // RFC 9745 §3: Deprecation debe ser un HTTP-date (IMF-fixdate).
+  // Usamos la fecha de sunset como fecha de deprecación declarada.
+  const sunsetDate = new Date(sunset);
+  const deprecationDate = Number.isNaN(sunsetDate.getTime())
+    ? new Date().toUTCString()
+    : sunsetDate.toUTCString();
+  return {
+    Deprecation: deprecationDate,
+    Sunset: sunsetDate.toUTCString(),
+    Link: `<${canonicalPath}>; rel="canonical"`
+  };
+};
 
 export const computeBareApiPath = (apiPath: string): string =>
   apiPath.replace(/^\/api(?=\/|$)/, '') || '/';

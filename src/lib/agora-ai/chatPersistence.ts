@@ -69,6 +69,9 @@ const MAX_LIST_LIMIT = 200;
 const DEFAULT_LIST_LIMIT = 30;
 const MAX_MESSAGES_LIMIT = 500;
 const DEFAULT_MESSAGES_LIMIT = 50;
+// C5b: máximo de chats activos por usuario. Previene acumulación ilimitada en
+// Firestore (storage abuse). El usuario debe borrar chats viejos para crear nuevos.
+export const MAX_CHATS_PER_USER = 200;
 
 export const clampListLimit = (raw: unknown): number => {
   const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
@@ -91,12 +94,28 @@ const toMillis = (value: unknown): number => {
 const chatsCol = (uid: string) => adminDb.collection('users').doc(uid).collection('agentChats');
 const messagesCol = (uid: string, chatId: string) => chatsCol(uid).doc(chatId).collection('messages');
 
+export class ChatLimitExceededError extends Error {
+  readonly limit: number;
+  constructor(limit: number) {
+    super(`El usuario ha alcanzado el límite de ${limit} chats. Borra chats anteriores para continuar.`);
+    this.name = 'ChatLimitExceededError';
+    this.limit = limit;
+  }
+}
+
 export const createAgentChat = async (uid: string, params: {
   title?: string;
   model?: string;
   provider?: typeof PROVIDER_VALUES[number];
   workspaceContext?: string;
 }): Promise<AgentChatRecord> => {
+  // C5b: verificar cap antes de escribir. Usamos una query count-only para
+  // no descargar documentos innecesariamente.
+  const countSnap = await chatsCol(uid).count().get();
+  if (countSnap.data().count >= MAX_CHATS_PER_USER) {
+    throw new ChatLimitExceededError(MAX_CHATS_PER_USER);
+  }
+
   const ref = chatsCol(uid).doc();
   const now = Date.now();
   const data = {

@@ -13,6 +13,34 @@ const streamUrlThrottle = new Map<string, { url: string; ts: number }>();
 const STREAM_URL_TTL_MS = 45 * 60 * 1000;
 const STREAM_URL_MAX_ENTRIES = 500;
 
+// Campos del doc Firestore que el cliente (MosaicEditor.applyDocData) realmente
+// consume. El doc además guarda campos internos —`ownerId`, `searchableContent`,
+// `contentHash`, `lastWriter`, `storageBackend`, `version`, `baseVersion`,
+// `syncState`— que NO deben viajar al cliente (info disclosure). Allowlist
+// positiva: sólo emitimos lo conocido-seguro.
+const STREAM_PUBLIC_FIELDS = [
+    'name',
+    'type',
+    'mimeType',
+    'url',
+    'storagePath',
+    'folder',
+    'workspaceId',
+    'content',
+    'lastUpdatedBy',
+    'size',
+    'updatedAt',
+    'createdAt'
+] as const;
+
+const pickPublicDocFields = (docId: string, data: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { id: docId };
+    for (const key of STREAM_PUBLIC_FIELDS) {
+        if (data[key] !== undefined) out[key] = data[key];
+    }
+    return out;
+};
+
 const evictStaleStreamUrls = () => {
     const now = Date.now();
     for (const [k, v] of streamUrlThrottle) {
@@ -144,8 +172,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     send({ type: 'deleted' });
                     return;
                 }
-                const snapData = { id: snap.id, ...snap.data() } as Record<string, unknown>;
-                const freshUrl = await maybeFreshUrl(id, snapData);
+                const rawData = snap.data() as Record<string, unknown>;
+                const snapData = pickPublicDocFields(snap.id, rawData);
+                const freshUrl = await maybeFreshUrl(id, rawData);
                 if (freshUrl) {
                     snapData.url = freshUrl;
                 } else if (isStaleBlobUrl(snapData.url)) {

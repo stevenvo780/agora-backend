@@ -4,7 +4,8 @@ import {
   clampListLimit,
   createAgentChat,
   listAgentChats,
-  parseChatCreatePayload
+  parseChatCreatePayload,
+  ChatLimitExceededError
 } from '@/lib/agora-ai/chatPersistence';
 
 export const runtime = 'nodejs';
@@ -39,6 +40,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     const chat = await createAgentChat(auth.uid, parsed.value);
     return NextResponse.json({ chat }, { status: 201 });
   } catch (error) {
+    // C5b: cap de chats por usuario → 429 con mensaje claro.
+    if (error instanceof ChatLimitExceededError) {
+      return NextResponse.json({ error: error.message, reason: 'chat-limit-exceeded', limit: error.limit }, { status: 429 });
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[agora-ai/chats] POST', message);
     return NextResponse.json({ error: 'No se pudo crear chat' }, { status: 500 });

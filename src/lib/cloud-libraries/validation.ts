@@ -20,6 +20,14 @@ const MAX_VERSION_LEN = 32;
 const ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$/;
 
+// C2: guard mínimo para fórmulas ST — permite el charset esperado (ASCII imprimible +
+// operadores lógicos Unicode comunes). Rechaza bytes de control y emoji sueltos sin
+// cargar el engine ST completo (que sería costoso con 5000 claims).
+const FORMULA_ALLOWED_CODEPOINTS = /^[\x20-\x7E¬∧∨→↔⊢⊥⊤∀∃≠≤≥⊣⟨⟩⟹…∅⊂⊃∈∉∪∩⋅≡⊕⊻□◊⊨⟦⟧\s]*$/u;
+
+const isValidFormula = (value: string): boolean =>
+  value.length > 0 && value.length <= MAX_FORMULA_LEN && FORMULA_ALLOWED_CODEPOINTS.test(value);
+
 const isNonEmptyString = (value: unknown, max: number): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= max;
 
@@ -61,8 +69,8 @@ const parseClaim = (raw: unknown, index: number): ParseResult<LibraryClaim> => {
   if (typeof c.id !== 'string' || !ID_PATTERN.test(c.id)) {
     return { ok: false, error: `claim[${index}].id inválido` };
   }
-  if (!isNonEmptyString(c.formula, MAX_FORMULA_LEN)) {
-    return { ok: false, error: `claim[${index}].formula inválida` };
+  if (typeof c.formula !== 'string' || !isValidFormula(c.formula)) {
+    return { ok: false, error: `claim[${index}].formula inválida (charset o longitud no permitida)` };
   }
   if (!isNonEmptyString(c.profile, MAX_PROFILE_LEN)) {
     return { ok: false, error: `claim[${index}].profile inválido` };

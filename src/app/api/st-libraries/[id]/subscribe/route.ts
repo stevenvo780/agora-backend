@@ -12,8 +12,11 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 const mapLibraryError = (err: unknown): Response => {
   if (isLibraryError(err)) {
-    if (err.code === 'not-found') return NextResponse.json({ error: err.message }, { status: 404 });
-    if (err.code === 'forbidden') return NextResponse.json({ error: err.message }, { status: 403 });
+    // B1: unificamos not-found y forbidden en 404 para que un no-miembro no pueda
+    // distinguir si la library existe (privada) o no existe — evita enumeración.
+    if (err.code === 'not-found' || err.code === 'forbidden') {
+      return NextResponse.json({ error: 'Library not found' }, { status: 404 });
+    }
     if (err.code === 'invalid') return NextResponse.json({ error: err.message }, { status: 400 });
   }
   return NextResponse.json({ error: 'Internal error' }, { status: 500 });
