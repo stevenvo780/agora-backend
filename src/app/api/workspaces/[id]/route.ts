@@ -15,6 +15,8 @@ import { deleteForgejoRepo, isForgejoConfigured } from '@/lib/forgejo';
 import { emitPing } from '@/lib/nas-events';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const deleteCollectionInBatches = async (collectionRef: CollectionReference, batchLimit = 400) => {
   let lastDoc: QueryDocumentSnapshot | null = null;
 
@@ -674,13 +676,19 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     }
 
     if (action === 'invite') {
-      if (!email) {
+      if (!email || typeof email !== 'string') {
         return NextResponse.json({ error: 'email is required' }, { status: 400 });
+      }
+      const normalizedEmail = email.toLowerCase().trim();
+      if (!EMAIL_PATTERN.test(normalizedEmail)) {
+        return NextResponse.json({ error: 'email format is invalid' }, { status: 400 });
       }
       if (wsData?.ownerId !== auth.uid) {
         return NextResponse.json({ error: 'Only workspace owner can invite' }, { status: 403 });
       }
-      const normalizedEmail = email.toLowerCase().trim();
+      if (auth.email && normalizedEmail === auth.email.toLowerCase().trim()) {
+        return NextResponse.json({ error: 'Cannot invite yourself' }, { status: 400 });
+      }
       await wsRef.update({ pendingInvites: FieldValue.arrayUnion(normalizedEmail) });
       invalidateMembershipCache(id);
       return NextResponse.json({ status: 'invited' });
