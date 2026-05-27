@@ -8,7 +8,7 @@ import { requireAuth, isWorkspaceMember } from '@/lib/server-auth';
 export const runtime = 'nodejs';
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import { adminDb } from '@/lib/firebase-admin';
-import { isForgejoConfigured, repoNameForWorkspace, getForgejoApiUrl, getForgejoOrg } from '@/lib/forgejo';
+import { isForgejoConfigured, repoNameForWorkspace, getForgejoApiUrl, getForgejoOrg, listUserRepos } from '@/lib/forgejo';
 import { getErrorMessage } from '@/lib/error-utils';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -33,6 +33,22 @@ export async function GET(req: NextRequest, context: RouteContext) {
         let ownerUid = auth.uid;
         if (isPersonalWorkspaceId(workspaceId)) {
             ownerUid = auth.uid;
+            // Los personales no escriben git-block en Firestore (no viven en /workspaces),
+            // así que verificamos en Forgejo si el repo ya fue provisionado.
+            const repoName = repoNameForWorkspace(workspaceId, ownerUid);
+            const fullName = `${getForgejoOrg()}/${repoName}`;
+            const repos = await listUserRepos(ownerUid);
+            const repo = repos.find((r) => r.full_name === fullName);
+            if (repo) {
+                return NextResponse.json({
+                    provisioned: true,
+                    workspaceId,
+                    repoFullName: repo.full_name,
+                    cloneUrl: repo.clone_url ?? null,
+                    sshUrl: repo.ssh_url ?? null,
+                    htmlUrl: repo.html_url ?? null
+                });
+            }
         } else {
             const wsSnap = await adminDb.collection('workspaces').doc(workspaceId).get();
             if (!wsSnap.exists) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
