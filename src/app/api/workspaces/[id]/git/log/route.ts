@@ -14,6 +14,13 @@ import { getErrorMessage } from '@/lib/error-utils';
 
 export const maxDuration = 60;
 
+/** Oculta el usuario del email (PII). Preserva el dominio para identidad visual. */
+const maskEmail = (email: string): string => {
+    const at = email.indexOf('@');
+    if (at <= 0) return '***';
+    return `***@${email.slice(at + 1)}`;
+};
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, context: RouteContext) {
@@ -49,7 +56,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
                 shortSha: c.sha.slice(0, 8),
                 message: c.commit.message,
                 authorName: c.commit.author.name,
-                authorEmail: c.commit.author.email,
+                authorEmail: maskEmail(c.commit.author.email),
                 date: c.commit.author.date,
                 htmlUrl: c.html_url
             }))

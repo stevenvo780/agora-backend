@@ -314,8 +314,40 @@ export const provisionWorkspaceRepo = async (params: {
   };
 };
 
+interface ForgejoTokenEntry {
+  id: number;
+  name: string;
+}
+
 /**
- * Resetea password admin → emite token PAT → restaura password random.
+ * Lista los tokens del user via Basic Auth (dentro de la ventana de tempPassword).
+ * Devuelve array vacío si falla.
+ */
+const listUserTokens = async (login: string, password: string): Promise<ForgejoTokenEntry[]> => {
+  const r = await fetchAsUser<ForgejoTokenEntry[]>(login, password, `/api/v1/users/${login}/tokens`);
+  return Array.isArray(r.body) ? r.body : [];
+};
+
+/**
+ * Revoca los tokens cuyo nombre coincide con `prefix` via Basic Auth.
+ * Ignora errores individuales (el token ya fue revocado, etc.).
+ */
+const revokeTokensByPrefix = async (login: string, password: string, prefix: string): Promise<void> => {
+  const tokens = await listUserTokens(login, password);
+  for (const tok of tokens) {
+    if (tok.name.startsWith(prefix)) {
+      await fetchAsUser(login, password, `/api/v1/users/${login}/tokens/${tok.id}`, { method: 'DELETE' }).catch(() => undefined);
+    }
+  }
+};
+
+/**
+ * Resetea password admin → revoca tokens previos con el mismo prefijo de nombre
+ * → emite token PAT nuevo → restaura password random.
+ *
+ * Garantiza a lo sumo 1 token activo por usuario para cada prefijo de nombre,
+ * evitando el sprawl ilimitado de tokens por llamada repetida.
+ *
  * Pensado para que el cliente browser obtenga un token nuevo cuando se le perdió
  * el inicial (provisioning) o cuando el admin lo revocó.
  */
@@ -332,6 +364,14 @@ export const issueTokenForUser = async (uid: string, tokenName: string, scopes: 
     body: JSON.stringify({ password: tempPassword, must_change_password: false, source_id: 0, login_name: login })
   });
   if (patched.status >= 400) return null;
+
+  // El prefijo fijo del nombre determina qué tokens previos revocar.
+  // Ej: "agora-cli-1234567890" → prefijo "agora-cli-".
+  // Hacemos esto dentro de la ventana de tempPassword para no necesitar
+  // una segunda elevación.
+  const dashIdx = tokenName.lastIndexOf('-');
+  const tokenPrefix = dashIdx > 0 ? tokenName.slice(0, dashIdx + 1) : tokenName;
+  await revokeTokensByPrefix(login, tempPassword, tokenPrefix).catch(() => undefined);
 
   // POST token con basic auth.
   const t = await fetchAsUser(login, tempPassword, `/api/v1/users/${login}/tokens`, {
