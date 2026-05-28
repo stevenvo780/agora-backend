@@ -21,6 +21,7 @@ import { parseDocumentUpdatePayload } from '@agora/contracts';
 import { isDotfileName } from '@agora/contracts';
 import { writeDocumentBlob } from '@/lib/documents/writeDocumentBlob';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
+import { resolveDocumentMimeType, deriveDocumentName } from '@/lib/documents/metadata-defaults';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -146,12 +147,29 @@ export async function PUT(req: NextRequest, context: RouteContext) {
             const ext = (storagePath.match(/\.[^./]+$/)?.[0] ?? '').toLowerCase();
             const isMd = ext === '.md' || ext === '.markdown';
             const contentType = isMd ? 'text/markdown'
-                : (typeof existingData?.mimeType === 'string' ? existingData.mimeType : 'text/plain');
+                : (typeof existingData?.mimeType === 'string' && existingData.mimeType.trim().length > 0
+                    ? existingData.mimeType
+                    : 'text/plain');
 
             const extraUpdate: Record<string, unknown> = {};
-            if (typeof body.name === 'string') extraUpdate.name = body.name;
+            // BUG B4: si el body NO trae name explícito y el existente es
+            // placeholder ("Sin titulo"/vacío) y el content arranca con H1,
+            // derivar el título desde el heading.
+            if (typeof body.name === 'string') {
+                extraUpdate.name = body.name;
+            } else {
+                const derived = deriveDocumentName(existingName, newContent);
+                if (typeof existingName === 'string' && derived !== existingName) {
+                    extraUpdate.name = derived;
+                }
+            }
             if (typeof body.type === 'string') extraUpdate.type = body.type;
-            if (typeof body.mimeType === 'string' || body.mimeType === null) extraUpdate.mimeType = body.mimeType ?? null;
+            // BUG B1: no escribir mimeType null nunca. Si viene null o el
+            // existente está vacío, inferir desde type/nombre.
+            const effectiveType = (typeof body.type === 'string' ? body.type : (existingData?.type as string | undefined)) ?? DocumentType.Text;
+            const effectiveName = typeof extraUpdate.name === 'string' ? extraUpdate.name : (existingName ?? '');
+            const incomingMime = typeof body.mimeType === 'string' ? body.mimeType : (typeof existingData?.mimeType === 'string' ? existingData.mimeType : null);
+            extraUpdate.mimeType = resolveDocumentMimeType(incomingMime, effectiveType, effectiveName);
             if (typeof body.folder === 'string') extraUpdate.folder = normalizeFolderPath(body.folder);
             if (typeof body.order === 'number') extraUpdate.order = body.order;
 
@@ -183,7 +201,19 @@ export async function PUT(req: NextRequest, context: RouteContext) {
 
         if (typeof body.name === 'string') updateData.name = body.name;
         if (typeof body.type === 'string') updateData.type = body.type;
-        if (typeof body.mimeType === 'string' || body.mimeType === null) updateData.mimeType = body.mimeType ?? null;
+        // BUG B1: si el body trae mimeType explícito (string) lo aplicamos;
+        // si viene null o el existente está vacío, inferimos un default
+        // válido (nunca null) — el front rechaza mimeType:null.
+        const ptType = (typeof body.type === 'string' ? body.type : (existingData?.type as string | undefined)) ?? DocumentType.Text;
+        const ptName = (typeof body.name === 'string' ? body.name : (typeof existingData?.name === 'string' ? existingData.name : ''));
+        const ptIncomingMime = typeof body.mimeType === 'string'
+            ? body.mimeType
+            : (typeof existingData?.mimeType === 'string' ? existingData.mimeType : null);
+        const ptExistingMimeStr = typeof existingData?.mimeType === 'string' ? existingData.mimeType.trim() : '';
+        const mimeBodyHasField = body.mimeType !== undefined;
+        if (mimeBodyHasField || ptExistingMimeStr.length === 0) {
+            updateData.mimeType = resolveDocumentMimeType(ptIncomingMime, ptType, ptName);
+        }
         if (typeof body.folder === 'string') updateData.folder = normalizeFolderPath(body.folder);
         if (typeof body.size === 'number') updateData.size = body.size;
         if (typeof body.order === 'number') updateData.order = body.order;

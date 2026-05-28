@@ -19,6 +19,7 @@ import { isNasConfigured, isStaleBlobUrl } from '@/lib/nas-storage';
 import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
 import { createDocumentBlob } from '@/lib/documents/writeDocumentBlob';
 import { decodeDocumentsCursor, encodeDocumentsCursor } from '@/lib/documents/cursor';
+import { resolveDocumentMimeType, deriveDocumentName } from '@/lib/documents/metadata-defaults';
 
 const isInsecure = env.ALLOW_INSECURE_AUTH();
 
@@ -30,14 +31,21 @@ export async function POST(req: NextRequest) {
         if (isInsecure) {
             const body = (await req.json()) as Record<string, unknown>;
             const folder = normalizeFolderPath(typeof body.folder === 'string' ? body.folder : undefined);
+            const rawType = typeof body.type === 'string' ? body.type : DocumentType.Text;
+            const rawContent = typeof body.content === 'string' ? body.content : '';
+            const rawName = typeof body.name === 'string' && body.name.trim() ? body.name : 'Sin titulo';
+            const derivedName = rawType === DocumentType.Text
+                ? deriveDocumentName(rawName, rawContent)
+                : rawName;
+            const rawMime = typeof body.mimeType === 'string' ? body.mimeType : null;
             const doc = mockCreateDoc({
-                name: typeof body.name === 'string' && body.name.trim() ? body.name : 'Sin titulo',
-                content: typeof body.content === 'string' ? body.content : '',
-                type: typeof body.type === 'string' ? body.type : DocumentType.Text,
+                name: derivedName,
+                content: rawContent,
+                type: rawType,
                 workspaceId: typeof body.workspaceId === 'string' && body.workspaceId ? body.workspaceId : PERSONAL_WORKSPACE_ID,
                 folder,
                 ownerId: auth.uid,
-                mimeType: typeof body.mimeType === 'string' ? body.mimeType : null,
+                mimeType: resolveDocumentMimeType(rawMime, rawType, derivedName),
                 order: typeof body.order === 'number' ? body.order : undefined
             });
             return NextResponse.json({ id: doc.id, status: 'success' });
@@ -54,8 +62,16 @@ export async function POST(req: NextRequest) {
         const normalizedFolder = normalizeFolderPath(folder ?? undefined);
         const resolvedWorkspaceId = workspaceId ?? PERSONAL_WORKSPACE_ID;
         const ownerId = auth.uid;
-        const docName = name;
         const docType = type;
+        // BUG B4: si el body trae name="Sin titulo" (default Zod) o vacío y el
+        // contenido arranca con `# Heading`, usar ese H1 como nombre del doc.
+        const docName = docType === DocumentType.Text
+            ? deriveDocumentName(name, content)
+            : name;
+        // BUG B1: el schema del front (resolvedDocumentMetaSchema) exige
+        // `mimeType: string` — escribir null hace que 1493 docs no abran.
+        // Inferimos siempre un mime válido a partir de type/nombre.
+        const resolvedMimeType = resolveDocumentMimeType(mimeType, docType, docName);
 
         if (!isPersonalWorkspaceId(resolvedWorkspaceId)) {
             const member = await isWorkspaceMember(resolvedWorkspaceId, auth.uid);
@@ -91,7 +107,7 @@ export async function POST(req: NextRequest) {
         const baseDocData: Record<string, unknown> = {
             name: docName,
             type: docType,
-            mimeType: mimeType ?? null,
+            mimeType: resolvedMimeType,
             ownerId,
             workspaceId: resolvedWorkspaceId,
             folder: normalizedFolder,
@@ -110,7 +126,7 @@ export async function POST(req: NextRequest) {
             const ext = (finalStoragePath.match(/\.[^./]+$/)?.[0] ?? '').toLowerCase();
             const contentType = ext === '.md' || ext === '.markdown'
                 ? 'text/markdown'
-                : (mimeType ?? 'text/plain');
+                : resolvedMimeType;
 
             const result = await createDocumentBlob({
                 docRef,
