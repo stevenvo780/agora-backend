@@ -179,6 +179,8 @@ export async function GET(req: NextRequest) {
         const workspaceId = searchParams.get('workspaceId');
         const view = searchParams.get('view');
         const fieldsParam = searchParams.get('fields');
+        const rawSearch = searchParams.get('q');
+        const searchQuery = rawSearch ? rawSearch.trim().toLowerCase() : '';
 
         let q: FirebaseFirestore.Query = adminDb.collection('documents');
 
@@ -205,9 +207,14 @@ export async function GET(req: NextRequest) {
             const fields = fieldsParam
                 ? fieldsParam.split(',').map(part => part.trim()).filter(Boolean)
                 : defaultFields;
-            const uniqueFields = Array.from(new Set(fields));
-            if (uniqueFields.length > 0) {
-                q = q.select(...uniqueFields);
+            // Firestore no soporta substring nativo. Si hay `q`, traemos
+            // `searchableContent` para filtrar in-memory aunque el cliente
+            // no lo pida en `fields` — lo descartamos antes del response.
+            const effectiveFields = searchQuery
+                ? Array.from(new Set([...fields, 'searchableContent']))
+                : Array.from(new Set(fields));
+            if (effectiveFields.length > 0) {
+                q = q.select(...effectiveFields);
             }
         }
 
@@ -250,6 +257,31 @@ export async function GET(req: NextRequest) {
             }
             return raw;
         });
+
+        if (searchQuery) {
+            // Firestore no soporta substring; filtramos in-memory por `name`
+            // y `searchableContent` (todos los tokens deben aparecer).
+            const tokens = searchQuery.split(/\s+/).filter((tok) => tok.length >= 2);
+            const matchTokens = tokens.length > 0 ? tokens : [searchQuery];
+            docs = docs.filter((raw) => {
+                const name = typeof raw.name === 'string' ? raw.name.toLowerCase() : '';
+                const searchable = typeof raw.searchableContent === 'string' ? raw.searchableContent.toLowerCase() : '';
+                const folder = typeof raw.folder === 'string' ? raw.folder.toLowerCase() : '';
+                const haystack = `${name}\n${folder}\n${searchable}`;
+                return matchTokens.every((tok) => haystack.includes(tok));
+            });
+            // No exponer `searchableContent` en el response — el cliente no lo
+            // pidió (no estaba en defaultFields ni en fieldsParam).
+            const fieldsRequested = fieldsParam
+                ? fieldsParam.split(',').map((p) => p.trim()).filter(Boolean)
+                : null;
+            const clientWantsSearchable = fieldsRequested
+                ? fieldsRequested.includes('searchableContent')
+                : false;
+            if (!clientWantsSearchable) {
+                for (const raw of docs) delete raw.searchableContent;
+            }
+        }
 
         if (offsetParam && !cursorParam) {
             const offsetVal = Math.max(0, parseInt(offsetParam, 10));
