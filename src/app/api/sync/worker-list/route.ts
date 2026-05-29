@@ -28,7 +28,7 @@ const SIGNED_TTL = 30 * 60; // 30 min — alcanza para descargar muchos blobs.
  * cap del total — el daemon itera `?cursor=<nextCursor>` hasta agotar
  * `hasMore=true`. Workspaces de 100k docs son válidos.
  */
-const DEFAULT_PAGE_SIZE = 2000;
+const DEFAULT_PAGE_SIZE = 200;
 /**
  * Tamaño máximo de UNA página, no del total. Más allá de esto Firestore
  * tiende a timeout o latencia inaceptable por query individual.
