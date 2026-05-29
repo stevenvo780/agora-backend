@@ -91,21 +91,71 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Invalid storagePath' }, { status: 403 });
         }
 
-        // Bug QA-W2: subir un .txt creaba 2 docs — el .txt original (type=file via
-        // /api/upload) y un .md autogenerado por la conversión client-side. Si
-        // detectamos que estamos por crear el .md derivativo (mismo stem, mismo
-        // owner/workspace/folder, sibling .txt creado en los últimos 5 minutos),
-        // devolvemos el .txt existente sin crear el duplicado.
+        // Bug QA-W2 / Wave-3: subir un .txt creaba 2 docs — el .txt original
+        // (type=file via /api/upload) y un .md autogenerado por la conversión
+        // client-side. El root cause se ataja en Front (no se hace la 2da call
+        // para text/plain). Esta defensa BE queda como red de seguridad: si
+        // algún cliente legacy o un script externo sigue mandando el .md
+        // derivativo, lo detectamos y devolvemos el .txt en su lugar.
+        //
+        // Wave-3: dedup ampliado a varias señales por orden de fuerza:
+        //   1. contentHash idéntico al .txt sibling dentro de 10min
+        //      (cubre el caso "el .md no aportó nada distinto").
+        //   2. mismo stem + sibling .txt creado en los últimos 10min
+        //      (cubre el caso original; ventana ampliada de 5 a 10min para
+        //      uploads grandes / con red lenta).
+        // Folder se normaliza con `folder || ''` consistente para evitar
+        // mismatches null/undefined/''.
         if (docType === DocumentType.Text && /\.md$/i.test(docName)) {
             const stem = docName.replace(/\.md$/i, '');
             if (stem.length > 0) {
+                const DEDUP_WINDOW_MS = 10 * 60 * 1000;
+                const recentMs = Date.now() - DEDUP_WINDOW_MS;
+                const folderForQuery = normalizedFolder || '';
+
+                // (1) Fallback por contentHash: si el content que llega tiene
+                // el mismo hash que un blob recién subido del mismo owner/ws,
+                // es el mismo doc. Más fuerte que el match por nombre.
+                if (content && content.length > 0) {
+                    try {
+                        const { createHash } = await import('node:crypto');
+                        const incomingHash = createHash('sha256').update(content, 'utf8').digest('hex');
+                        const hashQuery: FirebaseFirestore.Query = adminDb
+                            .collection('documents')
+                            .where('ownerId', '==', ownerId)
+                            .where('workspaceId', '==', resolvedWorkspaceId)
+                            .where('contentHash', '==', incomingHash)
+                            .limit(5);
+                        const hashSnap = await hashQuery.get();
+                        for (const sibling of hashSnap.docs) {
+                            const data = sibling.data() as Record<string, unknown>;
+                            const createdAt = data.createdAt as { toMillis?: () => number } | undefined;
+                            const createdMs = createdAt && typeof createdAt.toMillis === 'function'
+                                ? createdAt.toMillis()
+                                : 0;
+                            if (createdMs >= recentMs) {
+                                return NextResponse.json({
+                                    id: sibling.id,
+                                    status: 'dedup',
+                                    dedup: 'content-hash-match',
+                                    note: `Doc con contentHash idéntico creado dentro de la ventana de dedup.`,
+                                    storagePath: typeof data.storagePath === 'string' ? data.storagePath : null,
+                                    storageBackend: typeof data.storageBackend === 'string' ? data.storageBackend : 'minio'
+                                });
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[documents POST] dedup hash check fallo:', getErrorMessage(err));
+                    }
+                }
+
+                // (2) Match por nombre sibling .txt + ventana temporal.
                 try {
-                    const recentMs = Date.now() - 5 * 60 * 1000;
                     const dupQuery: FirebaseFirestore.Query = adminDb
                         .collection('documents')
                         .where('ownerId', '==', ownerId)
                         .where('workspaceId', '==', resolvedWorkspaceId)
-                        .where('folder', '==', normalizedFolder)
+                        .where('folder', '==', folderForQuery)
                         .where('name', '==', `${stem}.txt`)
                         .where('type', '==', DocumentType.File)
                         .limit(1);
@@ -123,17 +173,27 @@ export async function POST(req: NextRequest) {
                                     id: sibling.id,
                                     status: 'dedup',
                                     dedup: 'sibling-txt-exists',
-                                    note: `Sibling .txt creado en los últimos 5min; se omite duplicado .md.`,
+                                    note: `Sibling .txt creado dentro de la ventana de dedup; se omite duplicado .md.`,
                                     storagePath: typeof data.storagePath === 'string' ? data.storagePath : null,
                                     storageBackend: typeof data.storageBackend === 'string' ? data.storageBackend : 'minio'
                                 });
+                            } else {
+                                console.warn(
+                                    `[documents POST] dedup name-match descartado: createdMs=${createdMs} < recentMs=${recentMs} ` +
+                                    `(sibling.id=${sibling.id}, stem=${stem})`
+                                );
                             }
                         }
+                    } else {
+                        console.warn(
+                            `[documents POST] dedup name-match sin resultado: ownerId=${ownerId}, ws=${resolvedWorkspaceId}, ` +
+                            `folder=${JSON.stringify(folderForQuery)}, name=${stem}.txt, type=${DocumentType.File}`
+                        );
                     }
                 } catch (err) {
                     // Si la query falla (e.g. índice faltante), seguimos con el flujo normal
                     // — preferimos crear el duplicado a romper el upload.
-                    console.warn('[documents POST] dedup check fallo:', getErrorMessage(err));
+                    console.warn('[documents POST] dedup name check fallo:', getErrorMessage(err));
                 }
             }
         }
