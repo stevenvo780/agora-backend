@@ -91,6 +91,53 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Invalid storagePath' }, { status: 403 });
         }
 
+        // Bug QA-W2: subir un .txt creaba 2 docs — el .txt original (type=file via
+        // /api/upload) y un .md autogenerado por la conversión client-side. Si
+        // detectamos que estamos por crear el .md derivativo (mismo stem, mismo
+        // owner/workspace/folder, sibling .txt creado en los últimos 5 minutos),
+        // devolvemos el .txt existente sin crear el duplicado.
+        if (docType === DocumentType.Text && /\.md$/i.test(docName)) {
+            const stem = docName.replace(/\.md$/i, '');
+            if (stem.length > 0) {
+                try {
+                    const recentMs = Date.now() - 5 * 60 * 1000;
+                    const dupQuery: FirebaseFirestore.Query = adminDb
+                        .collection('documents')
+                        .where('ownerId', '==', ownerId)
+                        .where('workspaceId', '==', resolvedWorkspaceId)
+                        .where('folder', '==', normalizedFolder)
+                        .where('name', '==', `${stem}.txt`)
+                        .where('type', '==', DocumentType.File)
+                        .limit(1);
+                    const dupSnap = await dupQuery.get();
+                    if (!dupSnap.empty) {
+                        const sibling = dupSnap.docs[0];
+                        if (sibling) {
+                            const data = sibling.data() as Record<string, unknown>;
+                            const createdAt = data.createdAt as { toMillis?: () => number } | undefined;
+                            const createdMs = createdAt && typeof createdAt.toMillis === 'function'
+                                ? createdAt.toMillis()
+                                : 0;
+                            if (createdMs >= recentMs) {
+                                return NextResponse.json({
+                                    id: sibling.id,
+                                    status: 'dedup',
+                                    dedup: 'sibling-txt-exists',
+                                    note: `Sibling .txt creado en los últimos 5min; se omite duplicado .md.`,
+                                    storagePath: typeof data.storagePath === 'string' ? data.storagePath : null,
+                                    storageBackend: typeof data.storageBackend === 'string' ? data.storageBackend : 'minio'
+                                });
+                            }
+                        }
+                    }
+                } catch (err) {
+                    // Si la query falla (e.g. índice faltante), seguimos con el flujo normal
+                    // — preferimos crear el duplicado a romper el upload.
+                    console.warn('[documents POST] dedup check fallo:', getErrorMessage(err));
+                }
+            }
+        }
+
         let finalStoragePath = storagePath ?? undefined;
         if (docType !== DocumentType.File) {
             const fname = ensureTextFileName(docName);

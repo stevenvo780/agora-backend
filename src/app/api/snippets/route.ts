@@ -59,6 +59,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Idempotencia: si ya existe un snippet con mismo ownerId+workspaceId+title+markdown,
+    // devolvemos ese en vez de crear duplicado. Abrir la galería re-siembra los defaults
+    // y sin esto se acumulan cientos de copias (bug QA-W2: ~466 duplicados observados).
+    const dupSnap = await adminDb
+      .collection('snippets')
+      .where('ownerId', '==', auth.uid)
+      .where('workspaceId', '==', resolvedWorkspaceId)
+      .where('title', '==', title)
+      .where('markdown', '==', markdown)
+      .limit(1)
+      .get();
+    if (!dupSnap.empty) {
+      const existingDoc = dupSnap.docs[0];
+      if (existingDoc) {
+        return NextResponse.json(
+          { id: existingDoc.id, ...existingDoc.data(), dedup: 'already-exists' },
+          { status: 200 }
+        );
+      }
+    }
+
     const data: Record<string, unknown> = {
       title,
       description,
