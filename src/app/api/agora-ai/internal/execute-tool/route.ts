@@ -66,7 +66,8 @@ export async function POST(request: NextRequest) {
     llmEndpoint: incoming.llmEndpoint,
     llmModel: incoming.llmModel,
     authToken: request.headers.get('authorization')?.replace(/^Bearer\s+/i, ''),
-    accessPolicy: normalizeAgentAccessPolicy(incoming.accessPolicy)
+    accessPolicy: normalizeAgentAccessPolicy(incoming.accessPolicy),
+    dryRun: incoming.dryRun === true
   };
 
   try {

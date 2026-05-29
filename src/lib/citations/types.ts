@@ -35,6 +35,13 @@ export interface CitationSubgraph {
   focus: string[];
   depth: number;
   truncated: boolean;
+  /**
+   * true cuando el grafo está incompleto por una falla recuperable (p.ej. la
+   * query de aristas ENTRANTES falló por índice faltante). A diferencia de
+   * `truncated` (recorte por caps), `partial` indica datos perdidos en
+   * silencio que el consumidor debe poder señalar al usuario.
+   */
+  partial?: boolean;
 }
 
 export const CITATION_KINDS: ReadonlyArray<CitationKind> = ['wiki', 'link', 'concept', 'bib'];

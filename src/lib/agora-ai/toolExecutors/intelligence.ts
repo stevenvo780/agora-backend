@@ -584,13 +584,14 @@ async function queryCitationGraphTool(call: AgentToolCall, ctx: AgentExecutionCo
     matchedBy: e.matchedBy
   }));
 
-  const summary = `Subgrafo: ${subgraph.nodes.length} nodo(s), ${subgraph.edges.length} arista(s) (depth=${depth}${kinds ? `, kinds=${kinds.join(',')}` : ''})${subgraph.truncated ? ' [truncado por hard cap]' : ''}${ambiguous.length > 0 ? ` [${ambiguous.length} input(s) resuelto(s) por nombre/slug/fuzzy]` : ''}.`;
+  const summary = `Subgrafo: ${subgraph.nodes.length} nodo(s), ${subgraph.edges.length} arista(s) (depth=${depth}${kinds ? `, kinds=${kinds.join(',')}` : ''})${subgraph.truncated ? ' [truncado por hard cap]' : ''}${subgraph.partial ? ' [PARCIAL: faltan aristas entrantes por índice faltante]' : ''}${ambiguous.length > 0 ? ` [${ambiguous.length} input(s) resuelto(s) por nombre/slug/fuzzy]` : ''}.`;
   return ok(call, summary, {
     nodes: subgraph.nodes,
     edges: subgraph.edges,
     focus: subgraph.focus,
     depth: subgraph.depth,
     truncated: subgraph.truncated,
+    ...(subgraph.partial ? { partial: true } : {}),
     ...(ambiguous.length > 0 ? { resolvedFromAmbiguousInput: true, resolutionHints } : {})
   });
 }
@@ -644,6 +645,7 @@ async function findRelatedViaGraphTool(call: AgentToolCall, ctx: AgentExecutionC
   ]));
 
   let graphNodes: Array<{ docId: string; depth: number }> = [];
+  let graphPartial = false;
   if (seeds.length > 0) {
     const subgraph = await expandSubgraph({
       workspaceId: ctx.workspaceId,
@@ -653,6 +655,7 @@ async function findRelatedViaGraphTool(call: AgentToolCall, ctx: AgentExecutionC
       docMetaIndex: metaIndex
     });
     graphNodes = subgraph.nodes.map((n) => ({ docId: n.docId, depth: n.depth }));
+    graphPartial = subgraph.partial === true;
   }
   const graphDepthByDoc = new Map<string, number>();
   for (const n of graphNodes) {
@@ -686,11 +689,12 @@ async function findRelatedViaGraphTool(call: AgentToolCall, ctx: AgentExecutionC
   scored.sort((a, b) => b.combinedScore - a.combinedScore);
   const results = scored.slice(0, limit);
 
-  return ok(call, `Encontré ${results.length} doc(s) relevantes (lexical+grafo).`, {
+  return ok(call, `Encontré ${results.length} doc(s) relevantes (lexical+grafo)${graphPartial ? ' [grafo PARCIAL: faltan entrantes por índice]' : ''}.`, {
     query,
     results,
     seedDocIds: seeds,
-    totalCandidates: allDocIds.size
+    totalCandidates: allDocIds.size,
+    ...(graphPartial ? { partial: true } : {})
   });
 }
 
@@ -732,11 +736,12 @@ async function expandContextTool(call: AgentToolCall, ctx: AgentExecutionContext
     });
 
   void containsQueryTokens;
-  return ok(call, `Contexto expandido: ${enriched.length} doc(s) conectado(s) en hasta ${hops} salto(s).`, {
+  return ok(call, `Contexto expandido: ${enriched.length} doc(s) conectado(s) en hasta ${hops} salto(s)${subgraph.partial ? ' [PARCIAL: faltan aristas entrantes por índice]' : ''}.`, {
     initialDocIds: initial,
     hops,
     relatedDocs: enriched,
-    truncated: subgraph.truncated
+    truncated: subgraph.truncated,
+    ...(subgraph.partial ? { partial: true } : {})
   });
 }
 

@@ -80,21 +80,41 @@ export const resolveSemanticDocId = (workspaceId: string, uid: string) =>
 export const normalizeLookupKey = (value: string) => value.trim().toLowerCase();
 
 export interface DocumentPageCursor {
-  updatedAtMs: number;
+  /**
+   * Epoch ms del último doc de la página, para `orderBy('updatedAt')`. Es
+   * `null` en el cursor degradado (`byName`), cuando falta el índice compuesto
+   * y se pagina sólo por `__name__` (orden estable de docId).
+   */
+  updatedAtMs: number | null;
   id: string;
+  /**
+   * Si true, el cursor pagina por `__name__` (docId) en vez de updatedAt.
+   * Se usa en el fallback sin índice para no perder páginas en silencio.
+   */
+  byName?: boolean;
 }
 
 export const encodeDocumentPageCursor = (cursor: DocumentPageCursor): string =>
-  Buffer.from(JSON.stringify({ u: cursor.updatedAtMs, i: cursor.id }), 'utf8').toString('base64url');
+  Buffer.from(
+    JSON.stringify(
+      cursor.byName
+        ? { i: cursor.id, n: 1 }
+        : { u: cursor.updatedAtMs, i: cursor.id }
+    ),
+    'utf8'
+  ).toString('base64url');
 
 export const decodeDocumentPageCursor = (raw: unknown): DocumentPageCursor | null => {
   if (typeof raw !== 'string' || raw.length === 0) return null;
   try {
     const buf = Buffer.from(raw, 'base64url');
     if (buf.byteLength === 0) return null;
-    const parsed = JSON.parse(buf.toString('utf8')) as { u?: unknown; i?: unknown };
-    if (typeof parsed.u !== 'number' || !Number.isFinite(parsed.u)) return null;
+    const parsed = JSON.parse(buf.toString('utf8')) as { u?: unknown; i?: unknown; n?: unknown };
     if (typeof parsed.i !== 'string' || parsed.i.length === 0) return null;
+    if (parsed.n === 1) {
+      return { updatedAtMs: null, id: parsed.i, byName: true };
+    }
+    if (typeof parsed.u !== 'number' || !Number.isFinite(parsed.u)) return null;
     return { updatedAtMs: parsed.u, id: parsed.i };
   } catch {
     return null;

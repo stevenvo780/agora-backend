@@ -517,19 +517,29 @@ export async function loadWorkspaceDocumentsPage(
   let snap: FirebaseFirestore.QuerySnapshot;
   let orderedByUpdatedAt = true;
   try {
-    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
-    if (cursor) {
-      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    // Un cursor `byName` indica que la página previa salió del fallback sin
+    // índice: seguimos paginando por __name__ para no mezclar criterios.
+    if (cursor?.byName) {
+      let q = query.orderBy(FieldPath.documentId(), 'asc').startAfter(cursor.id);
+      snap = await q.limit(limit).get();
+      orderedByUpdatedAt = false;
+    } else {
+      let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+      if (cursor && cursor.updatedAtMs !== null) {
+        q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+      }
+      snap = await q.limit(limit).get();
     }
-    snap = await q.limit(limit).get();
   } catch (err) {
     if (isFirestoreIndexError(err)) {
       console.warn(
         '[loadWorkspaceDocumentsPage] missing composite index for workspaceId+updatedAt ' +
-        '(o ownerId+workspaceId+updatedAt). Fallback sin orderBy.'
+        '(o ownerId+workspaceId+updatedAt). Fallback paginando por __name__.'
       );
       orderedByUpdatedAt = false;
-      snap = await query.limit(limit).get();
+      let q = query.orderBy(FieldPath.documentId(), 'asc');
+      if (cursor) q = q.startAfter(cursor.id);
+      snap = await q.limit(limit).get();
     } else {
       throw err;
     }
@@ -537,13 +547,20 @@ export async function loadWorkspaceDocumentsPage(
 
   const documents = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument));
 
+  // Emitimos cursor mientras la página venga llena, tanto en el camino normal
+  // (updatedAt) como en el degradado (byName por __name__). Sin esto el
+  // fallback suprimía el cursor y perdía páginas en silencio.
   let nextCursor: string | null = null;
-  if (orderedByUpdatedAt && snap.size >= limit && snap.docs.length > 0) {
+  if (snap.size >= limit && snap.docs.length > 0) {
     const last = snap.docs[snap.docs.length - 1];
     if (last) {
-      const updatedAtMs = toMillisFromUnknown((last.data() as { updatedAt?: unknown }).updatedAt);
-      if (updatedAtMs !== null) {
-        nextCursor = encodeDocumentPageCursor({ updatedAtMs, id: last.id });
+      if (orderedByUpdatedAt) {
+        const updatedAtMs = toMillisFromUnknown((last.data() as { updatedAt?: unknown }).updatedAt);
+        if (updatedAtMs !== null) {
+          nextCursor = encodeDocumentPageCursor({ updatedAtMs, id: last.id });
+        }
+      } else {
+        nextCursor = encodeDocumentPageCursor({ updatedAtMs: null, id: last.id, byName: true });
       }
     }
   }

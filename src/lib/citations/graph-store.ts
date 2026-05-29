@@ -187,6 +187,7 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
   const edgesOut: CitationGraphEdge[] = [];
   const edgeSeen = new Set<string>();
   let truncated = false;
+  let partial = false;
 
   const ensureNode = (docId: string, distance: number, force: boolean): void => {
     if (nodesById.has(docId)) {
@@ -282,7 +283,13 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
           if (canExpand && !visited.has(sourceId)) nextFrontier.push(sourceId);
         }
       } catch (err) {
-        console.warn('[expandSubgraph] collectionGroup incoming query failed:', err instanceof Error ? err.message : err);
+        // La query de aristas ENTRANTES (collectionGroup + where targetDocId)
+        // suele fallar por índice faltante. Antes lo tragábamos en silencio y
+        // el grafo perdía entrantes sin avisar. Marcamos partial+truncated
+        // para que el consumidor pueda señalar el grafo incompleto.
+        partial = true;
+        truncated = true;
+        console.warn('[expandSubgraph] collectionGroup incoming query failed (grafo parcial, faltan entrantes):', err instanceof Error ? err.message : err);
       }
     }
 
@@ -294,7 +301,8 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
     edges: edgesOut,
     focus: focusDocIds,
     depth: normalizedDepth,
-    truncated
+    truncated,
+    ...(partial ? { partial: true } : {})
   };
 }
 
@@ -319,6 +327,7 @@ async function scanWorkspaceWideSubgraph(opts: ScanWorkspaceWideOptions): Promis
   type RawEdge = { from: string; to: string; kind: CitationKind; weight: number };
   const rawEdges: RawEdge[] = [];
   let truncated = false;
+  let partial = false;
 
   const PAGE_SIZE = 500;
   let lastDocRef: FirebaseFirestore.DocumentSnapshot | null = null;
@@ -332,7 +341,11 @@ async function scanWorkspaceWideSubgraph(opts: ScanWorkspaceWideOptions): Promis
     try {
       snap = await q.get();
     } catch (err) {
-      console.warn('[scanWorkspaceWideSubgraph] collectionGroup scan failed:', err instanceof Error ? err.message : err);
+      // Scan parcial: lo leído hasta aquí se conserva pero marcamos el grafo
+      // como incompleto en vez de devolver silenciosamente lo que haya.
+      partial = true;
+      truncated = true;
+      console.warn('[scanWorkspaceWideSubgraph] collectionGroup scan failed (grafo parcial):', err instanceof Error ? err.message : err);
       break;
     }
     if (snap.empty) break;
@@ -414,7 +427,8 @@ async function scanWorkspaceWideSubgraph(opts: ScanWorkspaceWideOptions): Promis
     edges: filteredEdges,
     focus: focusDocIds,
     depth: normalizedDepth,
-    truncated
+    truncated,
+    ...(partial ? { partial: true } : {})
   };
 }
 

@@ -12,7 +12,7 @@ import {
   summarizeDocumentMeta, syncTextDocumentToStorage, maybeDeleteStorageObject,
   listWorkspaceSnippets, loadBoardStateIfExists, loadSemanticState,
   fetchWorkerStatus,
-  normalizeFolderPath, adminDb, FieldValue,
+  normalizeFolderPath, adminDb, FieldValue, FieldPath,
   DocumentType, PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId,
   DEFAULT_PAGE_SIZE, DEFAULT_DOC_LIMIT, MAX_DOC_LIMIT,
   type StoredDocument, type StoredSnippet, type StoredBoardColumn, type StoredBoardCard
@@ -317,20 +317,27 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
   let snap: FirebaseFirestore.QuerySnapshot;
   let orderedByUpdatedAt = true;
   try {
-    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
-    if (cursor) {
-      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    if (cursor?.byName) {
+      snap = await query.orderBy(FieldPath.documentId(), 'asc').startAfter(cursor.id).limit(pageSize).get();
+      orderedByUpdatedAt = false;
+    } else {
+      let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+      if (cursor && cursor.updatedAtMs !== null) {
+        q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+      }
+      snap = await q.limit(pageSize).get();
     }
-    snap = await q.limit(pageSize).get();
   } catch (err) {
     const code = (err as { code?: unknown }).code;
     const msg = (err as { message?: unknown }).message;
     const indexErr = code === 9 || code === 'failed-precondition'
       || (typeof msg === 'string' && /requires an index/i.test(msg));
     if (indexErr) {
-      console.warn('[list_documents] missing composite index, fallback sin orderBy.');
+      console.warn('[list_documents] missing composite index, fallback paginando por __name__.');
       orderedByUpdatedAt = false;
-      snap = await query.limit(pageSize).get();
+      let q = query.orderBy(FieldPath.documentId(), 'asc');
+      if (cursor) q = q.startAfter(cursor.id);
+      snap = await q.limit(pageSize).get();
     } else {
       throw err;
     }
@@ -338,14 +345,17 @@ async function listDocuments(call: AgentToolCall, ctx: AgentExecutionContext) {
   const allDocs = snap.docs
     .map(doc => ({ id: doc.id, ...(doc.data() as Record<string, unknown>) } as StoredDocument));
 
+  // En el fallback degradado emitimos cursor por __name__ (orden estable) para
+  // no perder páginas en silencio; en el camino normal seguimos por updatedAt.
   let nextCursor: string | null = null;
-  if (orderedByUpdatedAt && snap.size >= pageSize && snap.docs.length > 0) {
+  if (snap.size >= pageSize && snap.docs.length > 0) {
     const last = snap.docs[snap.docs.length - 1];
     if (last) {
-      const rawUpdated = (last.data() as { updatedAt?: unknown }).updatedAt;
-      const ms = toEpoch(rawUpdated);
-      if (ms > 0) {
-        nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+      if (orderedByUpdatedAt) {
+        const ms = toEpoch((last.data() as { updatedAt?: unknown }).updatedAt);
+        if (ms > 0) nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+      } else {
+        nextCursor = encodeDocumentPageCursor({ updatedAtMs: null, id: last.id, byName: true });
       }
     }
   }
@@ -686,31 +696,41 @@ async function searchDocuments(call: AgentToolCall, ctx: AgentExecutionContext) 
   let snap: FirebaseFirestore.QuerySnapshot;
   let orderedByUpdatedAt = true;
   try {
-    let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
-    if (cursor) {
-      q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+    if (cursor?.byName) {
+      snap = await query.orderBy(FieldPath.documentId(), 'asc').startAfter(cursor.id).limit(pageSize).get();
+      orderedByUpdatedAt = false;
+    } else {
+      let q = query.orderBy('updatedAt', 'desc').orderBy('__name__', 'asc');
+      if (cursor && cursor.updatedAtMs !== null) {
+        q = q.startAfter(Timestamp.fromMillis(cursor.updatedAtMs), cursor.id);
+      }
+      snap = await q.limit(pageSize).get();
     }
-    snap = await q.limit(pageSize).get();
   } catch (err) {
     const code = (err as { code?: unknown }).code;
     const msg = (err as { message?: unknown }).message;
     const indexErr = code === 9 || code === 'failed-precondition'
       || (typeof msg === 'string' && /requires an index/i.test(msg));
     if (indexErr) {
-      console.warn('[search_documents] missing composite index, fallback sin orderBy.');
+      console.warn('[search_documents] missing composite index, fallback paginando por __name__.');
       orderedByUpdatedAt = false;
-      snap = await query.limit(pageSize).get();
+      let q = query.orderBy(FieldPath.documentId(), 'asc');
+      if (cursor) q = q.startAfter(cursor.id);
+      snap = await q.limit(pageSize).get();
     } else {
       throw err;
     }
   }
   let nextCursor: string | null = null;
-  if (orderedByUpdatedAt && snap.size >= pageSize && snap.docs.length > 0) {
+  if (snap.size >= pageSize && snap.docs.length > 0) {
     const last = snap.docs[snap.docs.length - 1];
     if (last) {
-      const rawUpdated = (last.data() as { updatedAt?: unknown }).updatedAt;
-      const ms = toEpoch(rawUpdated);
-      if (ms > 0) nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+      if (orderedByUpdatedAt) {
+        const ms = toEpoch((last.data() as { updatedAt?: unknown }).updatedAt);
+        if (ms > 0) nextCursor = encodeDocumentPageCursor({ updatedAtMs: ms, id: last.id });
+      } else {
+        nextCursor = encodeDocumentPageCursor({ updatedAtMs: null, id: last.id, byName: true });
+      }
     }
   }
   const pageMeta = buildPageMeta(snap.size, nextCursor);

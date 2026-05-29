@@ -20,6 +20,24 @@ import { isDestructiveAgentTool } from '@/lib/agora-ai/toolRegistry';
 
 const isDestructiveToolName = (name: string) => isDestructiveAgentTool(name) || name.startsWith('delete_') || name === 'update_document' || name === 'write_worker_file' || name === 'overwrite_document';
 
+/**
+ * Prefijos/nombres de tools que MUTAN estado. El dry-run debe cortar TODAS
+ * ellas (semántica "dry-run = ninguna mutación"), no sólo las destructivas
+ * (delete_*). Cubre creación, edición y movimiento de docs/snippets/board/
+ * relaciones/dictionary/members/worker, etc.
+ */
+const MUTATING_TOOL_PREFIXES = [
+  'create_', 'update_', 'delete_', 'overwrite_', 'write_', 'move_', 'rename_',
+  'remove_', 'add_', 'apply_', 'rollback'
+];
+const MUTATING_TOOL_NAMES = new Set([
+  'run_worker_command', 'commit_changes'
+]);
+const isMutatingToolName = (name: string): boolean =>
+  isDestructiveToolName(name)
+  || MUTATING_TOOL_NAMES.has(name)
+  || MUTATING_TOOL_PREFIXES.some(prefix => name.startsWith(prefix));
+
 type ToolHandler = (call: AgentToolCall, ctx: AgentExecutionContext) => Promise<AgentToolExecutionResult>;
 
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
@@ -85,8 +103,9 @@ export async function executeAgentTool(call: AgentToolCall, ctx: AgentExecutionC
     const handler = TOOL_HANDLERS[call.name];
     if (!handler) throw new Error(`Tool desconocida: ${call.name}`);
 
-    // DRY-RUN: tools destructivas devuelven simulación sin aplicar.
-    if (ctx.dryRun && isDestructiveToolName(call.name)) {
+    // DRY-RUN: toda tool que muta estado (crear/editar/mover/borrar) devuelve
+    // simulación sin aplicar. Semántica: dry-run = ninguna mutación.
+    if (ctx.dryRun && isMutatingToolName(call.name)) {
       const result: AgentToolExecutionResult = {
         ok: true,
         name: call.name,
