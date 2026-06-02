@@ -419,7 +419,7 @@ export async function POST(request: NextRequest) {
             const toolResults: unknown[] = [];
             for (const step of agentRun.steps) {
               if (step.type === 'tool_call' && step.call) toolCalls.push(step.call);
-              if (step.type === 'tool_result' && step.result) toolResults.push(step.result);
+              if ((step.type === 'tool_result' || step.type === 'error') && step.result) toolResults.push(step.result);
             }
             const tokens = agentRun.usage?.totalTokens && agentRun.usage.totalTokens > 0
               ? agentRun.usage.totalTokens

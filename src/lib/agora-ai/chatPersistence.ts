@@ -60,6 +60,7 @@ export interface AgentChatMessageRecord {
   role: 'user' | 'assistant' | 'tool';
   content: string;
   ts: number;
+  tokens?: number;
   toolCalls?: unknown[];
   toolResults?: unknown[];
   citations?: unknown[];
@@ -218,6 +219,7 @@ export const appendChatMessage = async (uid: string, chatId: string, payload: Ch
     content: payload.content,
     ts
   };
+  if (typeof payload.tokens === 'number' && payload.tokens > 0) data.tokens = payload.tokens;
   if (payload.toolCalls && payload.toolCalls.length) data.toolCalls = payload.toolCalls;
   if (payload.toolResults && payload.toolResults.length) data.toolResults = payload.toolResults;
   if (payload.citations && payload.citations.length) data.citations = payload.citations;
@@ -228,7 +230,7 @@ export const appendChatMessage = async (uid: string, chatId: string, payload: Ch
     updatedAt: ts,
     ...(tokensInc > 0 ? { totalTokens: FieldValue.increment(tokensInc) } : {})
   });
-  return { id: ref.id, role: payload.role, content: payload.content, ts, ...(payload.toolCalls ? { toolCalls: payload.toolCalls } : {}), ...(payload.toolResults ? { toolResults: payload.toolResults } : {}), ...(payload.citations ? { citations: payload.citations } : {}) };
+  return { id: ref.id, role: payload.role, content: payload.content, ts, ...(typeof payload.tokens === 'number' && payload.tokens > 0 ? { tokens: payload.tokens } : {}), ...(payload.toolCalls ? { toolCalls: payload.toolCalls } : {}), ...(payload.toolResults ? { toolResults: payload.toolResults } : {}), ...(payload.citations ? { citations: payload.citations } : {}) };
 };
 
 export const listChatMessages = async (uid: string, chatId: string, params: {
@@ -251,6 +253,7 @@ export const listChatMessages = async (uid: string, chatId: string, params: {
       role: (data.role === 'user' || data.role === 'assistant' || data.role === 'tool') ? data.role : 'assistant',
       content: typeof data.content === 'string' ? data.content : '',
       ts: toMillis(data.ts),
+      ...(typeof data.tokens === 'number' && data.tokens > 0 ? { tokens: data.tokens } : {}),
       ...(Array.isArray(data.toolCalls) ? { toolCalls: data.toolCalls } : {}),
       ...(Array.isArray(data.toolResults) ? { toolResults: data.toolResults } : {}),
       ...(Array.isArray(data.citations) ? { citations: data.citations } : {})

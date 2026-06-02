@@ -90,7 +90,7 @@ const publicApiRateLimit = createRateLimitMiddleware({
   keyPrefix: 'public-api:'
 });
 
-app.use(['/api/auth', '/api/payments', '/api/agora-ai'], publicApiRateLimit);
+app.use(['/api/auth', '/api/payments', '/api/agora-ai', '/api/public'], publicApiRateLimit);
 
 auditOnce();
 await mountNextStyleApiRoutes(app);

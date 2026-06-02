@@ -3,6 +3,7 @@ import { presignGet, putObject, getObjectBuffer, copyObject, getNasClient, getNa
 import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { FieldValue, type CollectionReference, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
+import { readJsonBody } from '@/lib/http/read-json-body';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isAdminUser, requireAuth, invalidateMembershipCache } from '@/lib/server-auth';
 import { WorkspaceType } from '@/types/workspace';
@@ -579,6 +580,39 @@ const cloneBoardDataToWorkspace = async (params: {
 
 type RouteContext = { params: Promise<{ id: string }> };
 
+export async function GET(req: NextRequest, context: RouteContext) {
+  try {
+    const auth = await requireAuth(req);
+    if (!auth) {
+      return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+    }
+
+    const { id } = await context.params;
+    if (!id) {
+      return NextResponse.json({ error: 'workspace id is required' }, { status: 400 });
+    }
+
+    const snap = await adminDb.collection('workspaces').doc(id).get();
+    if (!snap.exists) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+
+    const wsData = snap.data() as WorkspaceRecord | undefined;
+    const isMember = Array.isArray(wsData?.members) && wsData.members.includes(auth.uid);
+    const isOwner = wsData?.ownerId === auth.uid;
+    const isAdmin = await isAdminUser(auth.uid);
+
+    if (!isOwner && !isMember && !isAdmin) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    return NextResponse.json({ id: snap.id, ...wsData });
+  } catch (error: unknown) {
+    console.error('Error fetching workspace:', getErrorMessage(error));
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: NextRequest, context: RouteContext) {
   try {
     const auth = await requireAuth(req);
@@ -587,8 +621,11 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
-    const body = await req.json();
-    const { action, email } = body;
+    const bodyResult = await readJsonBody(req);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.value;
+    const action = typeof body.action === 'string' ? body.action : '';
+    const email = typeof body.email === 'string' ? body.email : undefined;
 
     if (!id) {
       return NextResponse.json({ error: 'workspace id is required' }, { status: 400 });
@@ -654,7 +691,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
         })
       ]);
 
-      syncWorkspaceClaims(auth.uid).catch(() => {});
+      syncWorkspaceClaims(auth.uid, targetWorkspaceRef.id).catch(() => {});
       if (docResult.clonedFiles > 0) {
         invalidateStorageUsageCache(auth.uid);
       }
@@ -710,12 +747,12 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       });
       invalidateMembershipCache(id);
       // Sync custom claims so security rules work without get()/exists()
-      syncWorkspaceClaims(auth.uid).catch(() => {});
+      syncWorkspaceClaims(auth.uid, id).catch(() => {});
       return NextResponse.json({ status: 'accepted' });
     }
 
     if (action === 'remove_member') {
-        const { userId } = body;
+        const userId = typeof body.userId === 'string' ? body.userId : '';
         if (!userId) {
             return NextResponse.json({ error: 'userId is required' }, { status: 400 });
         }
@@ -735,7 +772,8 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     }
 
     if (action === 'change_role') {
-        const { userId, role } = body as { userId?: string; role?: string };
+        const userId = typeof body.userId === 'string' ? body.userId : '';
+        const role = typeof body.role === 'string' ? body.role : '';
         if (!userId) {
             return NextResponse.json({ error: 'userId is required' }, { status: 400 });
         }

@@ -2,6 +2,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getErrorMessage } from '@/lib/error-utils';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
+import { readJsonBody } from '@/lib/http/read-json-body';
 import { requireAuth } from '@/lib/server-auth';
 import { WorkspaceType } from '@/types/workspace';
 import { syncWorkspaceClaims } from '@/lib/workspace-claims';
@@ -92,9 +93,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const { name } = body;
+    const bodyResult = await readJsonBody(req);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.value;
 
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (!name) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
@@ -111,7 +114,7 @@ export async function POST(req: NextRequest) {
     const docRef = await adminDb.collection('workspaces').add(workspaceData);
 
     // Sync custom claims so security rules work without get()/exists()
-    syncWorkspaceClaims(auth.uid).catch(() => {});
+    await syncWorkspaceClaims(auth.uid, docRef.id);
 
     // Siembra `.syncignore` con defaults — el daemon lo aplica para evitar que
     // archivos temp del editor (swp, ~) se conviertan en docs zombie.

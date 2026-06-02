@@ -4,7 +4,7 @@ import { computeSearchableContent } from '@/lib/search/searchable-content';
 import { emitPing, type SyncPing } from '@/lib/nas-events';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
 import { getErrorMessage } from '@/lib/error-utils';
-import { parseAndPersistCitationsForDoc } from '@/lib/citations/workspace-citations';
+import { parseAndPersistCitationsForDoc, invalidateWorkspaceCitationIndex } from '@/lib/citations/workspace-citations';
 
 export type WriteDocumentBlobSource =
   | 'api-create'
@@ -100,6 +100,7 @@ export async function writeDocumentBlob(input: WriteDocumentBlobInput): Promise<
     });
   }
 
+  invalidateWorkspaceCitationIndex(input.workspaceId, input.ownerId);
   void parseAndPersistCitationsForDoc({
     docId: input.docRef.id,
     workspaceId: input.workspaceId,
@@ -188,6 +189,7 @@ export async function createDocumentBlob(input: CreateDocumentBlobInput): Promis
     });
   }
 
+  invalidateWorkspaceCitationIndex(input.workspaceId, input.ownerId);
   void parseAndPersistCitationsForDoc({
     docId: input.docRef.id,
     workspaceId: input.workspaceId,

@@ -8,12 +8,10 @@ import { getErrorMessage } from '@/lib/error-utils';
 import { createLocalDevAuthToken, shouldUseLocalDevAuthFallback } from '@/lib/local-dev-auth';
 import { syncWorkspaceClaims } from '@/lib/workspace-claims';
 import { checkAuthRateLimit, recordAuthAttempt } from '@/lib/auth-rate-limit';
+import { getClientIp } from '@/lib/http/client-ip';
 
 const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILED_LOGIN_ATTEMPTS = 10;
-
-const clientIp = (req: NextRequest) =>
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
 
 const tooManyAttempts = (retryAfterSeconds: number) =>
     NextResponse.json(
@@ -23,7 +21,7 @@ const tooManyAttempts = (retryAfterSeconds: number) =>
 
 export async function POST(req: NextRequest) {
     try {
-        const ip = clientIp(req);
+        const ip = getClientIp(req);
 
         let body: { email?: string; password?: string };
         try {

@@ -123,7 +123,12 @@ export async function GET(req: NextRequest) {
                     if (!doc.storagePath) return null;
                     if (since > 0 && doc.updatedAtMs !== null && doc.updatedAtMs < since) return null;
 
-                    const repoPath = buildRepoPath(doc.folder, doc.name);
+                    const storagePrefix = isPersonalWorkspaceId(wsParam)
+                        ? `users/${ctx.userId}/`
+                        : `workspaces/${wsParam}/`;
+                    const repoPath = doc.storagePath.startsWith(storagePrefix)
+                        ? doc.storagePath.slice(storagePrefix.length)
+                        : buildRepoPath(doc.folder, doc.name);
                     let signedUrl: string | null = null;
                     if (includePresign) {
                         try {
