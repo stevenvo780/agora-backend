@@ -235,8 +235,14 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
       for (const edge of outgoing) {
         if (kindsFilter && !kindsFilter.has(edge.kind)) continue;
         const targetId = edge.targetDocId;
-        const targetKnown = metaIndex.has(targetId) || nodesById.has(targetId);
-        if (!targetKnown) continue;
+        const targetInMeta = metaIndex.has(targetId);
+        if (!targetInMeta && !nodesById.has(targetId)) {
+          // Target absent from meta-index: the doc may have been created just
+          // before this query (Firestore snapshot timing). Add it as a stub
+          // node instead of silently dropping the edge, and mark partial so
+          // callers know the graph may be incomplete.
+          partial = true;
+        }
         const targetIsFocal = focusSet.has(targetId);
         const alreadyInGraph = nodesById.has(targetId) || targetIsFocal;
         const canAddNewNode = canExpand && nodesById.size < maxNodes;

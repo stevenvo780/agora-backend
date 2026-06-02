@@ -14,6 +14,13 @@ import { validateWorkspaceId } from '@/lib/agora-ai/streamRequestValidation';
 
 export const maxDuration = 60;
 
+const VALIDATION_ERROR_PREFIX = 'Argumentos inválidos:';
+
+function resolveErrorStatus(errorMsg: string | undefined): 400 | 500 {
+  if (typeof errorMsg === 'string' && errorMsg.startsWith(VALIDATION_ERROR_PREFIX)) return 400;
+  return 500;
+}
+
 async function verifyAccess(request: NextRequest, workspaceId: string) {
   const auth = await requireAuth(request);
   if (!auth) return null;
@@ -87,7 +94,7 @@ export async function GET(request: NextRequest) {
       authToken: getTokenFromRequest(request) ?? undefined
     });
 
-    const status = result.ok ? 200 : 500;
+    const status = result.ok ? 200 : resolveErrorStatus(result.error);
     return NextResponse.json(result, { status });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 });
@@ -169,7 +176,7 @@ export async function POST(request: NextRequest) {
       accessPolicy: body.accessPolicy
     });
 
-    const status = result.ok ? 200 : 500;
+    const status = result.ok ? 200 : resolveErrorStatus(result.error);
     return NextResponse.json(result, { status });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 });

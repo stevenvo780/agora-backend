@@ -112,6 +112,14 @@ export async function POST(req: NextRequest, context: RouteContext) {
         });
     } catch (e) {
         console.error('[workspaces/provision-git] error', e);
-        return NextResponse.json({ error: getErrorMessage(e) }, { status: 500 });
+        const msg = getErrorMessage(e);
+        const code = (e as NodeJS.ErrnoException).code;
+        const isNetworkError =
+            msg.includes('fetch failed') ||
+            code === 'ECONNREFUSED' ||
+            code === 'EAI_AGAIN' ||
+            code === 'ENOTFOUND' ||
+            code === 'ETIMEDOUT';
+        return NextResponse.json({ error: msg }, { status: isNetworkError ? 503 : 500 });
     }
 }

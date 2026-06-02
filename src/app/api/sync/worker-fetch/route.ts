@@ -100,13 +100,13 @@ export async function POST(req: NextRequest) {
         const docOwnerWs = doc.workspaceId ?? null;
         if (isPersonal) {
           if (docOwnerWs !== PERSONAL_WORKSPACE_ID) {
-            return { docId: item.docId, contentHash: doc.contentHash, storagePath: doc.storagePath, size: doc.size, signedUrl: null, unchanged: false, error: 'forbidden' };
+            return { docId: item.docId, contentHash: null, storagePath: null, size: null, signedUrl: null, unchanged: false, error: 'not-found' };
           }
           if (doc.ownerId !== ctx.userId) {
-            return { docId: item.docId, contentHash: doc.contentHash, storagePath: doc.storagePath, size: doc.size, signedUrl: null, unchanged: false, error: 'forbidden' };
+            return { docId: item.docId, contentHash: null, storagePath: null, size: null, signedUrl: null, unchanged: false, error: 'not-found' };
           }
         } else if (docOwnerWs !== ctx.workspaceId) {
-          return { docId: item.docId, contentHash: doc.contentHash, storagePath: doc.storagePath, size: doc.size, signedUrl: null, unchanged: false, error: 'forbidden' };
+          return { docId: item.docId, contentHash: null, storagePath: null, size: null, signedUrl: null, unchanged: false, error: 'not-found' };
         }
 
         if (!doc.storagePath) {

@@ -38,7 +38,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<Record<string
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId requerido' }, { status: 400 });
     }
-    if (!isPersonalWorkspaceId(workspaceId)) {
+    if (isPersonalWorkspaceId(workspaceId)) {
+      const prefix = 'personal:';
+      if (!workspaceId.startsWith(prefix)) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      const ownerUid = workspaceId.slice(prefix.length);
+      if (ownerUid !== auth.uid) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+    } else {
       const member = await isWorkspaceMember(workspaceId, auth.uid);
       if (!member) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { DocumentType } from '@/types/documents';
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { invalidateStorageUsageCache } from '@/lib/storage-usage';
@@ -73,7 +73,7 @@ const validatePathOwnership = async (
     storagePath: string,
     workspaceId: string,
     uid: string
-): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+): Promise<{ ok: true } | { ok: false; status: number; error: string; code?: string }> => {
     if (isPersonalWorkspaceId(workspaceId)) {
         if (!storagePath.startsWith(`users/${uid}/`)) {
             return { ok: false, status: 403, error: 'Access denied: Invalid storage path' };
@@ -84,6 +84,9 @@ const validatePathOwnership = async (
     if (!member) return { ok: false, status: 403, error: 'Forbidden' };
     if (!storagePath.startsWith(`workspaces/${workspaceId}/`)) {
         return { ok: false, status: 403, error: 'Access denied: Invalid storage path' };
+    }
+    if (!(await canWriteWorkspace(workspaceId, uid))) {
+        return { ok: false, status: 403, error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' };
     }
     return { ok: true };
 };
@@ -125,7 +128,10 @@ export async function POST(req: NextRequest) {
 
         const ownership = await validatePathOwnership(storagePath, workspaceId, auth.uid);
         if (!ownership.ok) {
-            return NextResponse.json({ error: ownership.error }, { status: ownership.status });
+            return NextResponse.json(
+                { error: ownership.error, ...(ownership.code !== undefined ? { code: ownership.code } : {}) },
+                { status: ownership.status }
+            );
         }
 
         try {

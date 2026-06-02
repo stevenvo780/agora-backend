@@ -253,7 +253,7 @@ export const pushToExternalRemote = async (args: ExecuteArgs): Promise<GitOpResu
     const ref = args.ref ?? await resolveDefaultBranch(deps, forgejoCloneUrl, 'main');
     await deps.git.clone({
       fs: deps.fsAdapter, http: deps.http, dir: workdir, url: forgejoCloneUrl,
-      singleBranch: true, ref, depth: 1
+      singleBranch: true, ref
     });
 
     const externalUrl = remote.authMethod === 'token' && token
@@ -317,12 +317,9 @@ export const pullFromExternalRemote = async (args: ExecuteArgs): Promise<GitOpRe
 
     const ref = args.ref ?? await resolveDefaultBranch(deps, externalUrl, 'main');
 
-    // depth:1 + singleBranch: clone shallow del tip. isomorphic-git bufferea el
-    // packfile en heap; un depth alto en repos grandes revienta los 512 MiB de
-    // Cloud Run (OOM → container killed → request sin respuesta ni CORS).
     await deps.git.clone({
       fs: deps.fsAdapter, http: deps.http, dir: workdir, url: externalUrl,
-      singleBranch: true, ref, depth: 1
+      singleBranch: true, ref
     });
 
     const forgejoUrl = buildForgejoCloneUrl(args.workspaceId, args.ownerUid, args.repoName);

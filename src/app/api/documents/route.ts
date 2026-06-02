@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
         }
 
         let finalStoragePath = storagePath ?? undefined;
-        if (docType !== DocumentType.File) {
+        if (docType !== DocumentType.File && docType !== DocumentType.Folder) {
             const fname = ensureTextFileName(docName);
             if (!finalStoragePath) {
                 finalStoragePath = buildStoragePath({
@@ -269,7 +269,7 @@ export async function POST(req: NextRequest) {
             syncState: 'synced',
             lastWriter: ownerId
         };
-        if (finalStoragePath) fallbackData.storagePath = finalStoragePath;
+        if (finalStoragePath && docType === DocumentType.File) fallbackData.storagePath = finalStoragePath;
         await docRef.set(fallbackData);
 
         return NextResponse.json({

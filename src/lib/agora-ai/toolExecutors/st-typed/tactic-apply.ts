@@ -55,7 +55,7 @@ const contextHypSchema = z.object({
 
 const inputSchema = z.object({
   goal: z.string().min(1).max(10000),
-  tactic: z.string().min(1).max(500),
+  tactic: z.string().transform(s => s.trim()).pipe(z.string().min(1).max(500)),
   profile: z.string().optional().default('classical.propositional'),
   context: z.array(contextHypSchema).optional(),
 });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { getErrorMessage } from '@/lib/error-utils';
-import { isWorkspaceMember, requireAuth } from '@/lib/server-auth';
+import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-auth';
 import { isNasConfigured, presignUploadPart } from '@/lib/nas-storage';
 
 export const runtime = 'nodejs';
@@ -30,7 +30,7 @@ const parseBody = (raw: unknown): { ok: true; value: SignPartBody } | { ok: fals
 const validatePathOwnership = async (
     storagePath: string,
     uid: string
-): Promise<{ ok: true } | { ok: false; status: number; error: string }> => {
+): Promise<{ ok: true } | { ok: false; status: number; error: string; code?: string }> => {
     if (storagePath.includes('..')) {
         return { ok: false, status: 403, error: 'Access denied: Invalid storage path' };
     }
@@ -42,6 +42,9 @@ const validatePathOwnership = async (
     const workspaceId = wsMatch[1];
     const member = await isWorkspaceMember(workspaceId, uid);
     if (!member) return { ok: false, status: 403, error: 'Forbidden' };
+    if (!(await canWriteWorkspace(workspaceId, uid))) {
+        return { ok: false, status: 403, error: 'Insufficient permissions: viewer role is read-only', code: 'VIEWER_READONLY' };
+    }
     return { ok: true };
 };
 
@@ -61,7 +64,10 @@ export async function POST(req: NextRequest) {
 
         const ownership = await validatePathOwnership(storagePath, auth.uid);
         if (!ownership.ok) {
-            return NextResponse.json({ error: ownership.error }, { status: ownership.status });
+            return NextResponse.json(
+                { error: ownership.error, ...(ownership.code !== undefined ? { code: ownership.code } : {}) },
+                { status: ownership.status }
+            );
         }
 
         const signedUrl = await presignUploadPart(storagePath, uploadId, partNumber, PRESIGN_TTL_SECONDS);

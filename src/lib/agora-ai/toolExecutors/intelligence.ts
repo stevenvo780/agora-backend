@@ -1,3 +1,5 @@
+import dns from 'node:dns';
+import net from 'node:net';
 import {
   analyzeMarkdown, compareMarkdownDocuments, summarizeMarkdown
 } from '@/lib/agora-ai/documentIntelligence';
@@ -31,7 +33,51 @@ const AGORA_DOC_ALLOWED_SLUGS = new Set([
   'st/belnap', 'st/silogistico', 'st/probabilistico', 'st/aritmetico'
 ]);
 
-function validateExternalUrl(rawUrl: string): URL {
+function isPrivateOrLoopbackIp(address: string): boolean {
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number);
+    const [a, b] = parts as [number, number, number, number];
+    if (a === 127) return true;
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 0) return true;
+    return false;
+  }
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    if (normalized === '::1') return true;
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+    if (normalized.startsWith('fe80')) return true;
+    if (normalized.startsWith('::ffff:')) {
+      const v4 = normalized.slice(7);
+      if (net.isIPv4(v4)) return isPrivateOrLoopbackIp(v4);
+    }
+    if (normalized === '::') return true;
+    return false;
+  }
+  return true;
+}
+
+async function resolveAndValidateHost(hostname: string): Promise<void> {
+  let addresses: dns.LookupAddress[];
+  try {
+    addresses = await dns.promises.lookup(hostname, { all: true });
+  } catch {
+    throw new Error(`No se pudo resolver el host: ${hostname}`);
+  }
+  if (addresses.length === 0) {
+    throw new Error(`Host sin registros DNS: ${hostname}`);
+  }
+  for (const entry of addresses) {
+    if (isPrivateOrLoopbackIp(entry.address)) {
+      throw new Error(`Host bloqueado: ${hostname} resuelve a IP privada/loopback (${entry.address})`);
+    }
+  }
+}
+
+async function validateExternalUrl(rawUrl: string): Promise<URL> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -48,19 +94,44 @@ function validateExternalUrl(rawUrl: string): URL {
   if (FETCH_URL_BLOCKED_HOST_REGEX.test(host)) {
     throw new Error(`Host privado/local bloqueado: ${host}`);
   }
+  await resolveAndValidateHost(host);
   return url;
 }
 
-async function fetchUrlText(url: URL, maxBytes: number, timeoutMs: number) {
+const FETCH_URL_MAX_REDIRECTS = 5;
+
+async function fetchUrlText(startUrl: URL, maxBytes: number, timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url.toString(), {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { 'User-Agent': 'agora-agent/1.0', Accept: 'text/html, text/plain, application/json;q=0.9, */*;q=0.5' }
-    });
+    let currentUrl = startUrl;
+    let redirectsFollowed = 0;
+    let res: Response;
+
+    while (true) {
+      res = await fetch(currentUrl.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'agora-agent/1.0', Accept: 'text/html, text/plain, application/json;q=0.9, */*;q=0.5' }
+      });
+
+      if (res.status >= 300 && res.status < 400) {
+        if (redirectsFollowed >= FETCH_URL_MAX_REDIRECTS) {
+          throw new Error(`Demasiados redirects (>${FETCH_URL_MAX_REDIRECTS})`);
+        }
+        const location = res.headers.get('location');
+        if (!location) throw new Error('Redirect sin cabecera Location');
+        const nextUrl = await validateExternalUrl(new URL(location, currentUrl.toString()).toString());
+        currentUrl = nextUrl;
+        redirectsFollowed += 1;
+        try { await res.body?.cancel(); } catch { /* noop */ }
+        continue;
+      }
+
+      break;
+    }
+
     const reader = res.body?.getReader();
     if (!reader) {
       const text = await res.text();
@@ -106,7 +177,7 @@ async function fetchUrlText(url: URL, maxBytes: number, timeoutMs: number) {
 async function fetchUrlTool(call: AgentToolCall, _ctx: AgentExecutionContext) {
   const rawUrl = String(call.args.url || '').trim();
   if (!rawUrl) throw new Error('url es requerida');
-  const url = validateExternalUrl(rawUrl);
+  const url = await validateExternalUrl(rawUrl);
   const maxBytes = clamp(
     typeof call.args.maxBytes === 'number' ? call.args.maxBytes : FETCH_URL_MAX_BYTES_DEFAULT,
     1024, FETCH_URL_MAX_BYTES_HARD
@@ -139,7 +210,7 @@ async function readAgoraDocTool(call: AgentToolCall, ctx: AgentExecutionContext)
   if (!AGORA_DOC_ALLOWED_SLUGS.has(slug)) {
     throw new Error(`slug "${slug}" no está en la lista permitida. Slugs válidos: ${Array.from(AGORA_DOC_ALLOWED_SLUGS).join(', ')}`);
   }
-  const url = validateExternalUrl(`${AGORA_DOC_BASE}/${slug}`);
+  const url = await validateExternalUrl(`${AGORA_DOC_BASE}/${slug}`);
   const maxBytes = clamp(
     typeof call.args.maxBytes === 'number' ? call.args.maxBytes : 80_000,
     1024, FETCH_URL_MAX_BYTES_HARD

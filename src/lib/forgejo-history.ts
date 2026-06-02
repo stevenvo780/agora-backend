@@ -204,27 +204,35 @@ export const parseUnifiedDiff = (raw: string): { files: DiffFile[]; truncated: b
   return { files, truncated };
 };
 
-/**
- * El raw diff/patch lo sirve Forgejo por la ruta WEB
- * (`{host}/{owner}/{repo}/compare/{base}...{head}.diff`), NO por `/api/v1`.
- * Pegarle `.diff` a `/api/v1/.../compare/{base}...{head}` hace que Forgejo
- * intente resolver `{head}.diff` como ref → 404. Usamos la ruta web con el
- * mismo admin token para obtener el unified diff que `parseUnifiedDiff` espera.
- */
 export const compareRefs = async (
   repoFullName: string,
   base: string,
   head: string
 ): Promise<DiffResponse | null> => {
   const range = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
-  const webUrl = `${apiUrl()}/${repoFullName}/compare/${range}.diff`;
-  const r = await fetch(webUrl, {
-    headers: { Accept: 'text/plain', Authorization: `token ${adminToken()}` }
-  });
-  if (r.status === 404) return null;
-  if (!r.ok) return null;
-  const raw = await r.text();
-  const parsed = parseUnifiedDiff(raw);
+  const compareUrl = `${apiUrl()}/api/v1/repos/${repoFullName}/compare/${range}`;
+  const cr = await fetch(compareUrl, { headers: adminHeaders() });
+  if (!cr.ok) return null;
+  const body = (await cr.json()) as { commits?: Array<{ sha?: string }> };
+  if (!body || !Array.isArray(body.commits)) return null;
+
+  const rawParts: string[] = [];
+  let truncated = false;
+  for (const commit of body.commits) {
+    const sha = commit.sha;
+    if (!sha) continue;
+    const diffUrl = `${apiUrl()}/api/v1/repos/${repoFullName}/git/commits/${encodeURIComponent(sha)}.diff`;
+    const dr = await fetch(diffUrl, {
+      headers: { Accept: 'text/plain', Authorization: `token ${adminToken()}` }
+    });
+    if (!dr.ok) continue;
+    const raw = await dr.text();
+    rawParts.push(raw);
+  }
+
+  const parsed = parseUnifiedDiff(rawParts.join('\n'));
+  if (parsed.truncated) truncated = true;
+
   let totalAdditions = 0;
   let totalDeletions = 0;
   for (const f of parsed.files) {
@@ -234,7 +242,7 @@ export const compareRefs = async (
   return {
     files: parsed.files,
     stats: { totalAdditions, totalDeletions, totalFiles: parsed.files.length },
-    truncated: parsed.truncated
+    truncated
   };
 };
 

@@ -5,14 +5,34 @@
  */
 import { adminDb } from '@/lib/firebase-admin';
 import { NextRequest, NextResponse } from '@/lib/http/next-server';
+import { getClientIp } from '@/lib/http/client-ip';
 import { getErrorMessage } from '@/lib/error-utils';
 import { isNasConfigured, getObjectBuffer } from '@/lib/nas-storage';
+import { createSlidingWindowRateLimiter } from '@/lib/rate-limit';
 import { DocumentType } from '@/types/documents';
 import type { Timestamp } from 'firebase-admin/firestore';
 
 type RouteContext = { params: Promise<{ token: string }> };
 
-export async function GET(_req: NextRequest, context: RouteContext) {
+const shareTokenLimiter = createSlidingWindowRateLimiter({
+    keyPrefix: 'share-token:',
+    maxPerWindow: 15,
+    windowMs: 60_000,
+});
+
+export async function GET(req: NextRequest, context: RouteContext) {
+    const ip = getClientIp(req);
+    const limit = shareTokenLimiter.check(ip);
+    if (!limit.ok) {
+        return NextResponse.json(
+            { error: 'rate_limited', retryAfterMs: limit.retryAfterMs },
+            {
+                status: 429,
+                headers: { 'Retry-After': String(Math.ceil(limit.retryAfterMs / 1000)) },
+            },
+        );
+    }
+
     try {
         const { token } = await context.params;
 

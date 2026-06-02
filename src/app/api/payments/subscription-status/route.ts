@@ -31,7 +31,11 @@ export async function GET(req: NextRequest) {
 
     // Verificar si la suscripción ha expirado
     if (data.status === SubscriptionStatus.Active && data.endDate) {
-      const endDate = new Date(data.endDate);
+      const rawEnd = data.endDate as unknown;
+      const endDate =
+        rawEnd != null && typeof (rawEnd as { toDate?: unknown }).toDate === 'function'
+          ? (rawEnd as { toDate(): Date }).toDate()
+          : new Date(data.endDate);
       if (endDate < new Date()) {
         // Suscripción expirada — actualizar ambos documentos
         const nowIso = new Date().toISOString();

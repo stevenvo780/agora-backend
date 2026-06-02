@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
       .replace(/TEST-[\w-]+/gi, '[REDACTED]')
       .replace(/APP_USR-[\w-]+/gi, '[REDACTED]');
     return NextResponse.json(
-      { error: safeMessage, detail: getErrorMessage(errorCause, getErrorMessage(error)) },
+      { error: safeMessage },
       { status: 500 }
     );
   }

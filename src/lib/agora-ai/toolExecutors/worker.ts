@@ -25,7 +25,7 @@ const FORBIDDEN_COMMAND_PATTERNS: Array<{ pattern: RegExp; message: string }> = 
   { pattern: /\bsudo\b|\bsu\s+-?|\bpasswd\b/, message: 'Comandos de privilegios o cambio de usuario no permitidos.' },
   { pattern: /\b(mkfs|fdisk|parted|mount|umount|shutdown|reboot|poweroff)\b/, message: 'Comandos de sistema no permitidos.' },
   { pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}/, message: 'Patrones de fork bomb no permitidos.' },
-  { pattern: /\brm\s+(-[^\n;|&]*[rR][^\n;|&]*[fF]|-[^\n;|&]*[fF][^\n;|&]*[rR])\s+(\/|\/\*|~|\$HOME)(\s|$)/, message: 'No se permite borrar rutas raíz, home o absolutas peligrosas.' }
+  { pattern: /\brm\s+(-[^\n;|&]*[rR][^\n;|&]*[fF]|-[^\n;|&]*[fF][^\n;|&]*[rR])/, message: 'No se permite rm recursivo-forzado.' }
 ];
 
 function validateWorkerCommand(command: string) {

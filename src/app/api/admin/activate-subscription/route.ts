@@ -49,16 +49,16 @@ function parseActivateSubscriptionBody(raw: unknown): ActivateSubscriptionBody |
  * Body: { userId: string, planId: 'basic' | 'pro' | 'enterprise', durationMonths?: number }
  */
 export async function POST(req: NextRequest) {
-  // Block in production unless explicitly enabled
+  const authHeader = req.headers.get('x-admin-password') ?? '';
+  if (!timingSafeStringEqual(authHeader, ADMIN_PASSWORD)) {
+    return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+  }
+
   if (!ENABLE_ADMIN_ENDPOINTS) {
     return NextResponse.json({ error: 'Endpoint deshabilitado' }, { status: 403 });
   }
 
   try {
-    const authHeader = req.headers.get('x-admin-password') || '';
-    if (!timingSafeStringEqual(authHeader, ADMIN_PASSWORD)) {
-      return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
-    }
 
     let rawBody: unknown;
     try {

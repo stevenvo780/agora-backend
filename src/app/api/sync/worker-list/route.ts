@@ -79,6 +79,10 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: 'workspaceId mismatch' }, { status: 403 });
         }
 
+        if (cursorParam && !cursor) {
+            return NextResponse.json({ error: 'invalid cursor' }, { status: 400 });
+        }
+
         let q: FirebaseFirestore.Query = adminDb.collection('documents');
         if (isPersonalWorkspaceId(wsParam)) {
             if (!ctx.userId) {
@@ -87,6 +91,10 @@ export async function GET(req: NextRequest) {
             q = q.where('ownerId', '==', ctx.userId).where('workspaceId', '==', PERSONAL_WORKSPACE_ID);
         } else {
             q = q.where('workspaceId', '==', wsParam);
+        }
+
+        if (since > 0) {
+            q = q.where('updatedAt', '>=', Timestamp.fromMillis(since));
         }
 
         q = q.select('name', 'folder', 'type', 'storagePath', 'contentHash', 'size', 'version', 'updatedAt', 'ownerId')
@@ -121,7 +129,7 @@ export async function GET(req: NextRequest) {
                     const doc = parsed.value;
                     if (doc.type === 'folder') return null;
                     if (!doc.storagePath) return null;
-                    if (since > 0 && doc.updatedAtMs !== null && doc.updatedAtMs < since) return null;
+                    if (since > 0 && doc.updatedAtMs !== null && doc.updatedAtMs < since) return null; // defense; query already filters >=since
 
                     const storagePrefix = isPersonalWorkspaceId(wsParam)
                         ? `users/${ctx.userId}/`
@@ -155,16 +163,13 @@ export async function GET(req: NextRequest) {
         ).filter((item): item is WorkerListItem => item !== null);
 
         let nextCursor: string | null = null;
-        if (snap.size >= limit && snap.docs.length > 0) {
-            const last = snap.docs[snap.docs.length - 1];
-            if (last) {
-                const parsedLast = parseDocumentRecord(last.id, last.data());
-                if (parsedLast.ok && parsedLast.value.updatedAtMs !== null) {
-                    nextCursor = encodeWorkerListCursor({
-                        updatedAtMs: parsedLast.value.updatedAtMs,
-                        id: last.id
-                    });
-                }
+        if (snap.size >= limit && items.length > 0) {
+            const lastItem = items[items.length - 1];
+            if (lastItem && lastItem.updatedAt !== null) {
+                nextCursor = encodeWorkerListCursor({
+                    updatedAtMs: lastItem.updatedAt,
+                    id: lastItem.docId
+                });
             }
         }
 

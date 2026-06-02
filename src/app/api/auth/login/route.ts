@@ -38,20 +38,33 @@ export async function POST(req: NextRequest) {
         }
 
         const limitKey = `login:${ip}:${normalizedEmail}`;
+        const emailLimitKey = `login:email:${normalizedEmail}`;
         const limitOptions = { windowMs: FAILED_LOGIN_WINDOW_MS, maxAttempts: MAX_FAILED_LOGIN_ATTEMPTS };
-        const limit = await checkAuthRateLimit(limitKey, limitOptions);
+        const [limit, emailLimit] = await Promise.all([
+            checkAuthRateLimit(limitKey, limitOptions),
+            checkAuthRateLimit(emailLimitKey, limitOptions),
+        ]);
         if (!limit.ok) {
             return tooManyAttempts(limit.retryAfterSeconds);
         }
+        if (!emailLimit.ok) {
+            return tooManyAttempts(emailLimit.retryAfterSeconds);
+        }
 
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-            await recordAuthAttempt(limitKey, limitOptions);
+            await Promise.all([
+                recordAuthAttempt(limitKey, limitOptions),
+                recordAuthAttempt(emailLimitKey, limitOptions),
+            ]);
             return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
         const userLookup = await findUserByEmail(rawEmail || normalizedEmail);
         if (!userLookup) {
-            await recordAuthAttempt(limitKey, limitOptions);
+            await Promise.all([
+                recordAuthAttempt(limitKey, limitOptions),
+                recordAuthAttempt(emailLimitKey, limitOptions),
+            ]);
             return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
@@ -61,8 +74,11 @@ export async function POST(req: NextRequest) {
         const verification = await verifyPassword(password, userData?.passwordHash);
 
         if (!verification.ok) {
-             await recordAuthAttempt(limitKey, limitOptions);
-             return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
+            await Promise.all([
+                recordAuthAttempt(limitKey, limitOptions),
+                recordAuthAttempt(emailLimitKey, limitOptions),
+            ]);
+            return NextResponse.json({ error: 'Credenciales inválidas' }, { status: 401 });
         }
 
         if (verification.needsUpgrade && verification.newHash) {

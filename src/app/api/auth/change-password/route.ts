@@ -4,12 +4,26 @@ import { hashPassword, verifyPassword } from '@/lib/crypto';
 import { ensureFirebaseAuthUser, normalizeEmailAddress } from '@/lib/custom-auth';
 import { getErrorMessage } from '@/lib/error-utils';
 import { requireAuth } from '@/lib/server-auth';
+import { checkAuthRateLimit, recordAuthAttempt } from '@/lib/auth-rate-limit';
+
+const CHANGE_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
+const MAX_CHANGE_PASSWORD_ATTEMPTS = 5;
 
 export async function POST(req: NextRequest) {
     try {
         const auth = await requireAuth(req);
         if (!auth) {
             return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
+        }
+
+        const limitKey = `change-password:${auth.uid}`;
+        const limitOptions = { windowMs: CHANGE_PASSWORD_WINDOW_MS, maxAttempts: MAX_CHANGE_PASSWORD_ATTEMPTS };
+        const limit = await checkAuthRateLimit(limitKey, limitOptions);
+        if (!limit.ok) {
+            return NextResponse.json(
+                { error: 'Demasiados intentos. Intentá de nuevo más tarde.' },
+                { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
+            );
         }
 
         let body: { currentPassword?: string; newPassword?: string };
@@ -50,6 +64,7 @@ export async function POST(req: NextRequest) {
 
         const verification = await verifyPassword(currentPassword, userData?.passwordHash);
         if (!verification.ok) {
+            await recordAuthAttempt(limitKey, limitOptions);
             return NextResponse.json(
                 { error: 'Contraseña actual incorrecta' },
                 { status: 401 }

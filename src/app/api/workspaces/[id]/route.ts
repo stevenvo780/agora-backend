@@ -1,4 +1,4 @@
-import { adminDb } from '@/lib/firebase-admin';
+import { adminDb, adminAuth } from '@/lib/firebase-admin';
 import { presignGet, putObject, getObjectBuffer, copyObject, getNasClient, getNasBucket } from '@/lib/nas-storage';
 import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { FieldValue, type CollectionReference, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
@@ -15,6 +15,7 @@ import { invalidateStorageUsageCache } from '@/lib/storage-usage';
 import { deleteForgejoRepo, isForgejoConfigured } from '@/lib/forgejo';
 import { emitPing } from '@/lib/nas-events';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
+import { validateWorkspaceId } from '@/lib/agora-ai/streamRequestValidation';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -588,11 +589,12 @@ export async function GET(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
-    if (!id) {
-      return NextResponse.json({ error: 'workspace id is required' }, { status: 400 });
+    const safeId = validateWorkspaceId(id);
+    if (!safeId) {
+      return NextResponse.json({ error: 'Invalid workspace id' }, { status: 400 });
     }
 
-    const snap = await adminDb.collection('workspaces').doc(id).get();
+    const snap = await adminDb.collection('workspaces').doc(safeId).get();
     if (!snap.exists) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
@@ -621,17 +623,17 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
+    const safeId = validateWorkspaceId(id);
+    if (!safeId) {
+      return NextResponse.json({ error: 'Invalid workspace id' }, { status: 400 });
+    }
     const bodyResult = await readJsonBody(req);
     if (!bodyResult.ok) return bodyResult.response;
     const body = bodyResult.value;
     const action = typeof body.action === 'string' ? body.action : '';
     const email = typeof body.email === 'string' ? body.email : undefined;
 
-    if (!id) {
-      return NextResponse.json({ error: 'workspace id is required' }, { status: 400 });
-    }
-
-    const wsRef = adminDb.collection('workspaces').doc(id);
+    const wsRef = adminDb.collection('workspaces').doc(safeId);
     const snap = await wsRef.get();
     if (!snap.exists) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -725,6 +727,15 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       }
       if (auth.email && normalizedEmail === auth.email.toLowerCase().trim()) {
         return NextResponse.json({ error: 'Cannot invite yourself' }, { status: 400 });
+      }
+      try {
+        const invitedUser = await adminAuth.getUserByEmail(normalizedEmail);
+        const members: string[] = Array.isArray(wsData?.members) ? wsData.members : [];
+        if (members.includes(invitedUser.uid)) {
+          return NextResponse.json({ error: 'User is already a member' }, { status: 400 });
+        }
+      } catch {
+        // User not in Firebase Auth yet — invite is valid, proceed
       }
       await wsRef.update({ pendingInvites: FieldValue.arrayUnion(normalizedEmail) });
       invalidateMembershipCache(id);
@@ -929,11 +940,12 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     }
 
     const { id } = await context.params;
-    if (!id) {
-      return NextResponse.json({ error: 'workspace id is required' }, { status: 400 });
+    const safeId = validateWorkspaceId(id);
+    if (!safeId) {
+      return NextResponse.json({ error: 'Invalid workspace id' }, { status: 400 });
     }
 
-    const wsRef = adminDb.collection('workspaces').doc(id);
+    const wsRef = adminDb.collection('workspaces').doc(safeId);
     const snap = await wsRef.get();
     if (!snap.exists) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
