@@ -15,6 +15,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'node:crypto';
 
 const endpoint = process.env.NAS_S3_ENDPOINT?.trim();
+const publicEndpoint = process.env.NAS_S3_PUBLIC_ENDPOINT?.trim();
 const region = process.env.NAS_S3_REGION?.trim() || 'us-east-1';
 const bucket = process.env.NAS_S3_BUCKET?.trim() || 'agora-blobs';
 const accessKey = process.env.NAS_S3_ACCESS_KEY?.trim();
@@ -53,6 +54,11 @@ export const isStaleBlobUrl = (url: unknown): boolean => {
   const current = currentEndpointHost();
   if (!current) return false;
   return host !== current;
+};
+
+export const rewritePresignedUrl = (url: string): string => {
+  if (!publicEndpoint || !endpoint) return url;
+  return url.replace(endpoint, publicEndpoint);
 };
 
 export const getNasClient = (): S3Client => {
@@ -171,7 +177,7 @@ export const presignGet = async (
   ttlSeconds = 60 * 60,
   options: PresignGetOptions = {}
 ): Promise<string> => {
-  return getSignedUrl(
+  const url = await getSignedUrl(
     getNasClient(),
     new GetObjectCommand({
       Bucket: bucket,
@@ -181,6 +187,7 @@ export const presignGet = async (
     }),
     { expiresIn: ttlSeconds }
   );
+  return rewritePresignedUrl(url);
 };
 
 export const presignPut = async (
@@ -188,7 +195,8 @@ export const presignPut = async (
   ttlSeconds = 15 * 60,
   contentType?: string
 ): Promise<string> => {
-  return getSignedUrl(getNasClient(), new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }), { expiresIn: ttlSeconds });
+  const url = await getSignedUrl(getNasClient(), new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }), { expiresIn: ttlSeconds });
+  return rewritePresignedUrl(url);
 };
 
 export const createMultipartUpload = async (
@@ -212,7 +220,7 @@ export const presignUploadPart = async (
   partNumber: number,
   ttlSeconds = 60 * 60
 ): Promise<string> => {
-  return getSignedUrl(
+  const url = await getSignedUrl(
     getNasClient(),
     new UploadPartCommand({
       Bucket: bucket,
@@ -222,6 +230,7 @@ export const presignUploadPart = async (
     }),
     { expiresIn: ttlSeconds }
   );
+  return rewritePresignedUrl(url);
 };
 
 export const completeMultipartUpload = async (

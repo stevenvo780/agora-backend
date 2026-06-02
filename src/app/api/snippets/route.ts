@@ -10,18 +10,27 @@ import { isWorkspaceMember, canWriteWorkspace, requireAuth } from '@/lib/server-
 import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace';
 import { parseSnippetCreatePayload } from '@agora/contracts';
 
+const SNIPPETS_MAX_PAGE = 500;
+
 export async function GET(req: NextRequest) {
   try {
     const auth = await requireAuth(req);
     if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
-    const workspaceId = req.nextUrl.searchParams.get('workspaceId') || PERSONAL_WORKSPACE_ID;
+    const params = req.nextUrl.searchParams;
+    const workspaceId = params.get('workspaceId') || PERSONAL_WORKSPACE_ID;
     if (!isPersonalWorkspaceId(workspaceId)) {
       const member = await isWorkspaceMember(workspaceId, auth.uid);
       if (!member) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
     }
+
+    const limitParam = params.get('limit');
+    const parsedLimit = limitParam === null ? SNIPPETS_MAX_PAGE : Number(limitParam);
+    const requestedLimit = Number.isFinite(parsedLimit) ? parsedLimit : SNIPPETS_MAX_PAGE;
+    const pageSize = Math.min(Math.max(1, requestedLimit), SNIPPETS_MAX_PAGE);
+    const cursorDocId = params.get('cursor') ?? null;
 
     let query: FirebaseFirestore.Query = adminDb
       .collection('snippets')
@@ -31,10 +40,25 @@ export async function GET(req: NextRequest) {
       query = query.where('ownerId', '==', auth.uid);
     }
 
-    const snap = await query.orderBy('order', 'asc').limit(500).get();
+    query = query.orderBy('order', 'asc').limit(pageSize);
 
+    if (cursorDocId) {
+      const cursorDoc = await adminDb.collection('snippets').doc(cursorDocId).get();
+      // El cursor debe pertenecer al mismo scope o se ignora: un id ajeno solo
+      // posiciona por `order` y devolvería páginas inconsistentes, no datos ajenos.
+      const sameWorkspace = cursorDoc.exists && cursorDoc.get('workspaceId') === workspaceId;
+      const sameOwner = !isPersonalWorkspaceId(workspaceId) || cursorDoc.get('ownerId') === auth.uid;
+      if (sameWorkspace && sameOwner) {
+        query = query.startAfter(cursorDoc);
+      }
+    }
+
+    const snap = await query.get();
     const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-    return NextResponse.json(items);
+    const lastDoc = snap.docs[snap.docs.length - 1];
+    const nextCursor = snap.size === pageSize && lastDoc ? lastDoc.id : null;
+
+    return NextResponse.json({ items, cursor: nextCursor });
   } catch (error) {
     console.error('GET /api/snippets error', getErrorMessage(error));
     return NextResponse.json({ error: 'Internal error' }, { status: 500 });
