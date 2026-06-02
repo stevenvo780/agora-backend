@@ -184,11 +184,10 @@ export type DailyBudgetCheck = DailyBudgetCheckOk | DailyBudgetCheckBlocked;
 
 /**
  * Extrae el contador de tokens (prompt + completion) del sub-doc del provider.
- * Si el doc viejo no tiene `byProvider`, devuelve 0 — es decir, los counters
- * por-provider arrancan en cero al primer call post-deploy, aunque el total
- * agregado refleje gasto previo. Es intencional: con el cap único anterior no
- * se podía atribuir el consumo por provider, así que tratamos esa sombra como
- * "consumo sin proveedor identificable" que no penaliza ningún cap específico.
+ * Si el doc no tiene contador para ese provider (ni map anidado ni keys planas
+ * legacy), devuelve 0. Los docs del schema previo al `byProvider` no penalizan
+ * ningún cap específico: el total agregado del cap único anterior no era
+ * atribuible a un proveedor.
  */
 function readProviderUsed(data: Record<string, unknown> | null, providerKey: BudgetProviderKey | null): number {
   if (!data) return 0;
@@ -198,14 +197,27 @@ function readProviderUsed(data: Record<string, unknown> | null, providerKey: Bud
     const ct = Number(data.completionTokens ?? 0);
     return (Number.isFinite(pt) ? pt : 0) + (Number.isFinite(ct) ? ct : 0);
   }
+  // Suma el map anidado nuevo y las keys planas legacy ya persistidas en prod
+  // (Bug: `set({merge:true})` con keys con punto NO crea field-paths anidados,
+  // los guarda como nombres de campo literales). Tolerar ambas evita perder el
+  // conteo histórico mientras los docs viejos siguen vivos (TTL 7d).
+  let total = 0;
   const byProvider = data.byProvider;
-  if (!byProvider || typeof byProvider !== 'object') return 0;
-  const sub = (byProvider as Record<string, unknown>)[providerKey];
-  if (!sub || typeof sub !== 'object') return 0;
-  const subRec = sub as Record<string, unknown>;
-  const pt = Number(subRec.promptTokens ?? 0);
-  const ct = Number(subRec.completionTokens ?? 0);
-  return (Number.isFinite(pt) ? pt : 0) + (Number.isFinite(ct) ? ct : 0);
+  if (byProvider && typeof byProvider === 'object') {
+    const sub = (byProvider as Record<string, unknown>)[providerKey];
+    if (sub && typeof sub === 'object') {
+      const subRec = sub as Record<string, unknown>;
+      total += toFiniteNumber(subRec.promptTokens) + toFiniteNumber(subRec.completionTokens);
+    }
+  }
+  total += toFiniteNumber(data[`byProvider.${providerKey}.promptTokens`]);
+  total += toFiniteNumber(data[`byProvider.${providerKey}.completionTokens`]);
+  return total;
+}
+
+function toFiniteNumber(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /**
@@ -274,8 +286,15 @@ export async function recordUsage(
       expiresAt: Timestamp.fromMillis(expiresAtMs)
     };
     if (providerKey !== null) {
-      payload[`byProvider.${providerKey}.promptTokens`] = FieldValue.increment(pt);
-      payload[`byProvider.${providerKey}.completionTokens`] = FieldValue.increment(ct);
+      // Objeto anidado literal: `set({merge:true})` SÍ mergea maps anidados y
+      // aplica increment en las hojas. Las dotted-string-keys, en cambio, se
+      // persistirían planas (solo `update()` las interpreta como field-paths).
+      payload.byProvider = {
+        [providerKey]: {
+          promptTokens: FieldValue.increment(pt),
+          completionTokens: FieldValue.increment(ct)
+        }
+      };
     }
     await ref.set(payload, { merge: true });
   } catch (error) {

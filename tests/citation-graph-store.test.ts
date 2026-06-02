@@ -5,10 +5,16 @@
  * el BFS empujaba los 500 primeros como nodos focales y el cap cortaba
  * ANTES de leer ninguna cita.
  *
- * Cubre los helpers puros que sostienen el fix sin tocar firebase-admin
+ * Bug (regresión espuria truncated=true): el BFS en depth=1 marcaba
+ * `truncated:true` cuando llegaba al límite de profundidad solicitado —
+ * aunque los hard caps (500 nodos / 2000 aristas) no se hubieran alcanzado.
+ * `truncated` solo debe ser `true` cuando se cortó por hard cap.
+ *
+ * Cubre los helpers puros que sostienen los fixes sin tocar firebase-admin
  * (la integración Firestore se valida con smoke contra el deploy):
  *   - shouldUseWorkspaceWideScan: cuándo cambiar de BFS a single scan.
  *   - rankNodesForCap: focos primero, luego mayor grado, al podar.
+ *   - bfsShouldMarkTruncated: regla de truncamiento BFS (depth limit ≠ hard cap).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,6 +22,7 @@ import assert from 'node:assert/strict';
 import {
   shouldUseWorkspaceWideScan,
   rankNodesForCap,
+  bfsShouldMarkTruncated,
   CITATION_GRAPH_HARD_CAPS
 } from '../src/lib/citations/graph-store.ts';
 
@@ -75,4 +82,50 @@ test('rankNodesForCap: nodos sin entry en degree se tratan como grado 0', () => 
   const degree = new Map<string, number>([['known', 3]]);
   const ranked = rankNodesForCap(['unknown', 'known'], focusSet, degree);
   assert.deepEqual(ranked, ['known', 'unknown']);
+});
+
+// ── bfsShouldMarkTruncated: regresión truncated=true espurio en depth=1 ──────
+
+test('bfsShouldMarkTruncated: nodo ya en grafo → nunca truncado', () => {
+  // Aunque canExpand=false y nodesSize>=maxNodes, si el nodo ya estaba no hay nada que truncar.
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: true, canExpand: false, nodesSize: 500, maxNodes: 500 }),
+    false
+  );
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: true, canExpand: true, nodesSize: 500, maxNodes: 500 }),
+    false
+  );
+});
+
+test('bfsShouldMarkTruncated: llegar al depth solicitado (canExpand=false) NO es truncación', () => {
+  // Regresión: depth=1 con 3 nodos y cap 500 → antes daba truncated=true, ahora false.
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: false, canExpand: false, nodesSize: 3, maxNodes: 500 }),
+    false
+  );
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: false, canExpand: false, nodesSize: 0, maxNodes: 500 }),
+    false
+  );
+});
+
+test('bfsShouldMarkTruncated: hard cap de nodos alcanzado (canExpand=true) → truncado', () => {
+  // Hay más profundidad disponible pero el grafo llenó el cap de nodos.
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: false, canExpand: true, nodesSize: 500, maxNodes: 500 }),
+    true
+  );
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: false, canExpand: true, nodesSize: 501, maxNodes: 500 }),
+    true
+  );
+});
+
+test('bfsShouldMarkTruncated: nodo nuevo con espacio y canExpand → NO truncado', () => {
+  // Aún hay espacio en el cap y podemos expandir → el nodo se incluye normalmente, no es truncación.
+  assert.equal(
+    bfsShouldMarkTruncated({ alreadyInGraph: false, canExpand: true, nodesSize: 3, maxNodes: 500 }),
+    false
+  );
 });

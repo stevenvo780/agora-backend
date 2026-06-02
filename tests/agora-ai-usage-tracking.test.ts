@@ -36,44 +36,44 @@ const {
 
 // ---- Fake Firestore doc store --------------------------------------------
 //
-// Acepta dos formas de "increment":
-//  - sentinel real de firebase-admin v13 (objeto con `operand: number`)
-//  - shape sintético { __op:'increment', value } para tests directos
-// Cualquier otro valor numérico se asigna tal cual.
+// Replica la semántica REAL de `set(data, { merge: true })` de firebase-admin:
+//  - el sentinel de increment (objeto con `operand: number`) suma al valor previo;
+//  - los objetos anidados se mergean recursivamente;
+//  - cualquier otro valor reemplaza al previo.
 //
-// Soporta también dotted paths (`byProvider.deepseek.promptTokens`) que es
-// como Firestore actualiza sub-fields anidados al hacer set con merge.
+// Crítico: las KEYS con punto (`byProvider.deepseek.promptTokens`) NO son
+// field-paths en `set()` — solo `update()` las interpreta. Aquí quedan como
+// nombres de campo PLANOS literales, igual que en Firestore real. El fake
+// anterior las expandía a mano (setDotted), enmascarando el bug.
 
 const fakeStore = new Map<string, Record<string, unknown>>();
 
-function applyMaybeIncrement(prev: unknown, value: unknown): unknown {
-  if (value && typeof value === 'object') {
-    const v = value as Record<string, unknown>;
-    if (typeof v.operand === 'number') {
-      const base = typeof prev === 'number' ? prev : 0;
-      return base + v.operand;
-    }
-    if (v.__op === 'increment') {
-      const base = typeof prev === 'number' ? prev : 0;
-      return base + Number(v.value || 0);
-    }
-  }
-  return value;
+function isIncrementSentinel(value: unknown): value is { operand: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'operand' in value &&
+    typeof (value as { operand: unknown }).operand === 'number'
+  );
 }
 
-function setDotted(target: Record<string, unknown>, path: string[], value: unknown): void {
-  // Navega creando objetos intermedios y aplica increment en la hoja si aplica.
-  let cur: Record<string, unknown> = target;
-  for (let i = 0; i < path.length - 1; i++) {
-    const key = path[i]!;
-    const next = cur[key];
-    if (!next || typeof next !== 'object') {
-      cur[key] = {};
-    }
-    cur = cur[key] as Record<string, unknown>;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mergeValue(prev: unknown, next: unknown): unknown {
+  if (isIncrementSentinel(next)) {
+    const base = typeof prev === 'number' ? prev : 0;
+    return base + next.operand;
   }
-  const leaf = path[path.length - 1]!;
-  cur[leaf] = applyMaybeIncrement(cur[leaf], value);
+  if (isPlainObject(next)) {
+    const base: Record<string, unknown> = isPlainObject(prev) ? { ...prev } : {};
+    for (const [k, v] of Object.entries(next)) {
+      base[k] = mergeValue(base[k], v);
+    }
+    return base;
+  }
+  return next;
 }
 
 function fakeFactory(uid: string, day: string) {
@@ -84,16 +84,7 @@ function fakeFactory(uid: string, day: string) {
       return { exists: data !== undefined, data: () => data };
     },
     async set(data: Record<string, unknown>, _options: { merge: boolean }) {
-      const next: Record<string, unknown> = { ...(fakeStore.get(key) ?? {}) };
-      for (const [k, v] of Object.entries(data)) {
-        if (k.includes('.')) {
-          setDotted(next, k.split('.'), v);
-        } else if (k === 'promptTokens' || k === 'completionTokens' || k === 'requestCount') {
-          next[k] = applyMaybeIncrement(next[k], v);
-        } else {
-          next[k] = v;
-        }
-      }
+      const next = mergeValue(fakeStore.get(key) ?? {}, data) as Record<string, unknown>;
       fakeStore.set(key, next);
       return undefined;
     }
@@ -105,6 +96,29 @@ function resetAll() {
   __resetUsageTrackingMemory();
   __setUsageDocFactoryForTest(fakeFactory);
 }
+
+// ---- Tests: el fake replica la semántica real de set({merge:true}) -------
+
+test('fake store: keys con punto quedan PLANAS (no se anidan en set+merge)', async () => {
+  const ref = fakeFactory('probe', 'day');
+  await ref.set(
+    { 'byProvider.deepseek.promptTokens': { operand: 5 } as unknown },
+    { merge: true }
+  );
+  const snap = await ref.get();
+  const data = snap.data()!;
+  assert.equal(data['byProvider.deepseek.promptTokens'], 5, 'la dotted key se guarda literal');
+  assert.equal((data.byProvider as Record<string, unknown> | undefined), undefined, 'NO se crea map anidado');
+});
+
+test('fake store: maps anidados reales sí se mergean recursivamente', async () => {
+  const ref = fakeFactory('probe2', 'day');
+  await ref.set({ byProvider: { deepseek: { promptTokens: { operand: 3 } as unknown } } }, { merge: true });
+  await ref.set({ byProvider: { deepseek: { promptTokens: { operand: 4 } as unknown } } }, { merge: true });
+  const snap = await ref.get();
+  const byProvider = snap.data()!.byProvider as Record<string, Record<string, number>>;
+  assert.equal(byProvider.deepseek!.promptTokens, 7, 'increments anidados acumulan');
+});
 
 // ---- Tests: normalización de proveedor -----------------------------------
 
@@ -178,6 +192,18 @@ test('cap diario: DeepSeek excede su propio cap → 429 con provider=deepseek', 
   }
 });
 
+// Test de regresión del bug HIGH: recordUsage acumulado por encima del cap
+// DEBE bloquear. Con el bug viejo (`set` + dotted-keys planas + lectura que solo
+// miraba el map anidado) `used` quedaba en 0 y nunca bloqueaba.
+test('regresión bug HIGH: 2 records que cruzan el cap → bloquea con used real', async () => {
+  resetAll();
+  await recordUsage('user-RB', 'deepseek', 900, 200);  // 1100
+  await recordUsage('user-RB', 'deepseek', 800, 200);  // +1000 = 2100 ≥ 2000
+  const r = await checkDailyBudget('user-RB', 'deepseek');
+  assert.equal(r.used, 2100, 'used refleja el total acumulado, no 0');
+  assert.equal(r.ok, false, 'el cap por-proveedor DEBE bloquear');
+});
+
 test('cap diario: aislamiento entre proveedores del mismo user', async () => {
   resetAll();
   // User excede DeepSeek pero NO ha tocado OpenAI.
@@ -226,6 +252,45 @@ test('cap diario: gemini se normaliza a google (mismo budget)', async () => {
   } else {
     assert.fail('ambos deberían pasar (400 < 800)');
   }
+});
+
+// ---- Tests: forma persistida y compat de keys legacy planas ---------------
+
+test('recordUsage persiste byProvider como map ANIDADO (no dotted-keys planas)', async () => {
+  resetAll();
+  const day = __internalsForTest.dayKey(Date.now());
+  await recordUsage('user-NEST', 'deepseek', 200, 100);
+  const doc = fakeStore.get(`user-NEST::${day}`)!;
+  const byProvider = doc.byProvider as Record<string, Record<string, number>>;
+  assert.equal(byProvider.deepseek!.promptTokens, 200);
+  assert.equal(byProvider.deepseek!.completionTokens, 100);
+  assert.equal(doc['byProvider.deepseek.promptTokens'], undefined, 'no quedan dotted-keys planas');
+});
+
+test('compat legacy: lee keys planas YA persistidas en prod (docs históricos)', async () => {
+  resetAll();
+  const day = __internalsForTest.dayKey(Date.now());
+  // Doc real del bug: keys planas literales escritas por la versión vieja.
+  fakeStore.set(`user-LEGACY::${day}`, {
+    'byProvider.deepseek.promptTokens': 1500,
+    'byProvider.deepseek.completionTokens': 600
+  });
+  const r = await checkDailyBudget('user-LEGACY', 'deepseek');
+  assert.equal(r.used, 2100, 'suma las keys planas legacy');
+  assert.equal(r.ok, false, 'bloquea sobre el conteo histórico');
+});
+
+test('compat legacy: suma keys planas legacy + map anidado nuevo', async () => {
+  resetAll();
+  const day = __internalsForTest.dayKey(Date.now());
+  fakeStore.set(`user-MIX::${day}`, {
+    'byProvider.deepseek.promptTokens': 800,
+    'byProvider.deepseek.completionTokens': 400
+  });
+  await recordUsage('user-MIX', 'deepseek', 600, 300); // nuevo nido +900
+  const r = await checkDailyBudget('user-MIX', 'deepseek');
+  assert.equal(r.used, 2100, 'legacy(1200) + nuevo(900) = 2100');
+  assert.equal(r.ok, false);
 });
 
 // ---- Tests: migración de docs viejos -------------------------------------

@@ -17,6 +17,7 @@ import { PERSONAL_WORKSPACE_ID, isPersonalWorkspaceId } from '@/types/workspace'
 import { mockCreateDoc, mockListDocs } from '@/lib/insecure-mock-store';
 import { isNasConfigured, isStaleBlobUrl } from '@/lib/nas-storage';
 import { normalizeDotfileLegacy, parseDocumentCreatePayload } from '@agora/contracts';
+import { readJsonBody } from '@/lib/http/read-json-body';
 import { createDocumentBlob } from '@/lib/documents/writeDocumentBlob';
 import { decodeDocumentsCursor, encodeDocumentsCursor } from '@/lib/documents/cursor';
 import { resolveDocumentMimeType, deriveDocumentName } from '@/lib/documents/metadata-defaults';
@@ -29,7 +30,9 @@ export async function POST(req: NextRequest) {
         if (!auth) return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
 
         if (isInsecure) {
-            const body = (await req.json()) as Record<string, unknown>;
+            const bodyResult = await readJsonBody(req);
+            if (!bodyResult.ok) return bodyResult.response;
+            const body = bodyResult.value;
             const folder = normalizeFolderPath(typeof body.folder === 'string' ? body.folder : undefined);
             const rawType = typeof body.type === 'string' ? body.type : DocumentType.Text;
             const rawContent = typeof body.content === 'string' ? body.content : '';

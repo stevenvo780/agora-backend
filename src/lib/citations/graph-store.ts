@@ -238,9 +238,13 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
         const targetKnown = metaIndex.has(targetId) || nodesById.has(targetId);
         if (!targetKnown) continue;
         const targetIsFocal = focusSet.has(targetId);
-        const canAddTargetNode = nodesById.has(targetId) || targetIsFocal || (canExpand && nodesById.size < maxNodes);
-        if (!canAddTargetNode) {
-          truncated = true;
+        const alreadyInGraph = nodesById.has(targetId) || targetIsFocal;
+        const canAddNewNode = canExpand && nodesById.size < maxNodes;
+        if (!alreadyInGraph && !canAddNewNode) {
+          // Node would be new and we can't expand further (depth limit or hard cap).
+          // Only set truncated if we hit the hard cap — reaching the requested
+          // depth is not truncation.
+          if (canExpand) truncated = true;
           continue;
         }
         const key = `${docId}->${targetId}:${edge.kind}`;
@@ -268,9 +272,11 @@ export async function expandSubgraph(options: ExpandSubgraphOptions): Promise<Ci
           if (sourceId === docId) continue;
           if (!metaIndex.has(sourceId)) continue;
           const sourceIsFocal = focusSet.has(sourceId);
-          const canAddSourceNode = nodesById.has(sourceId) || sourceIsFocal || (canExpand && nodesById.size < maxNodes);
-          if (!canAddSourceNode) {
-            truncated = true;
+          const alreadyInGraph = nodesById.has(sourceId) || sourceIsFocal;
+          const canAddNewNode = canExpand && nodesById.size < maxNodes;
+          if (!alreadyInGraph && !canAddNewNode) {
+            // Same logic: depth limit is not truncation; hard cap is.
+            if (canExpand) truncated = true;
             continue;
           }
           const key = `${sourceId}->${docId}:${kindRaw}`;
@@ -437,6 +443,32 @@ export const CITATION_GRAPH_HARD_CAPS = {
   maxEdges: MAX_EDGES_HARD_CAP,
   maxDepth: 5
 } as const;
+
+/**
+ * Helper puro extraído para test.
+ *
+ * Determina si un nodo BFS que no está en el grafo todavía debe provocar que
+ * `truncated` se marque como true.
+ *
+ * Regla:
+ *  - Si el nodo ya está en el grafo (`alreadyInGraph`) → no hay nada que
+ *    truncar, se incluye normalmente.
+ *  - Si el nodo es nuevo y `canExpand` (no llegamos al límite de profundidad
+ *    pedido) pero `nodesSize >= maxNodes` → alcanzamos el hard cap → truncated.
+ *  - Si el nodo es nuevo y `!canExpand` → simplemente llegamos a la
+ *    profundidad que el usuario pidió → NO es truncamiento.
+ */
+export const bfsShouldMarkTruncated = (opts: {
+  alreadyInGraph: boolean;
+  canExpand: boolean;
+  nodesSize: number;
+  maxNodes: number;
+}): boolean => {
+  const { alreadyInGraph, canExpand, nodesSize, maxNodes } = opts;
+  if (alreadyInGraph) return false;
+  if (!canExpand) return false;
+  return nodesSize >= maxNodes;
+};
 
 /**
  * Helper puro extraído para test. Decide si una corrida de `expandSubgraph`
