@@ -780,6 +780,19 @@ export const getNexusUrl = () => (
   || 'http://localhost:3002'
 ).replace(/\/+$/, '');
 
+// Códigos de error donde la conexión NUNCA se estableció: la request no llegó
+// al destino, por lo que el comando no pudo ejecutarse → reintentar es seguro
+// incluso para operaciones que mutan. Un AbortError (timeout) o una respuesta
+// HTTP de error son ambiguos (el comando pudo haber corrido) y NO se reintentan.
+const CONN_RETRY_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN']);
+function isRetriableConnError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  if ((err as { name?: string }).name === 'AbortError') return false;
+  const code = (err as { cause?: { code?: string }; code?: string }).cause?.code
+    ?? (err as { code?: string }).code;
+  return !!code && CONN_RETRY_CODES.has(code);
+}
+
 export async function fetchNexusJson<T>(
   path: string,
   ctx: AgentExecutionContext,
@@ -790,27 +803,37 @@ export async function fetchNexusJson<T>(
     throw new Error('No hay token de usuario disponible para comunicarse con el Hub del worker.');
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${getNexusUrl()}${path}`, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ctx.authToken}`,
-        ...(init.headers || {})
+  const url = `${getNexusUrl()}${path}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${ctx.authToken}`,
+    ...(init.headers || {})
+  };
+  const attempts = 3;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal, headers });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) as T & { error?: string } : {} as T & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Hub ${res.status}: ${text.slice(0, 200)}`);
       }
-    });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) as T & { error?: string } : {} as T & { error?: string };
-    if (!res.ok) {
-      throw new Error(data.error || `Hub ${res.status}: ${text.slice(0, 200)}`);
+      return data as T;
+    } catch (err) {
+      lastErr = err;
+      if (isRetriableConnError(err) && i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 300 * Math.pow(3, i)));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-    return data as T;
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastErr;
 }
 
 export async function fetchAppJson<T>(
@@ -826,27 +849,37 @@ export async function fetchAppJson<T>(
     throw new Error('No hay origin de la app disponible para llamar APIs internas de Agora.');
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${ctx.origin}${path}`, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ctx.authToken}`,
-        ...(init.headers || {})
+  const url = `${ctx.origin}${path}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${ctx.authToken}`,
+    ...(init.headers || {})
+  };
+  const attempts = 3;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal, headers });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) as T & { error?: string; detail?: string } : {} as T & { error?: string; detail?: string };
+      if (!res.ok) {
+        throw new Error(data.error || data.detail || `Agora API ${res.status}: ${text.slice(0, 200)}`);
       }
-    });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) as T & { error?: string; detail?: string } : {} as T & { error?: string; detail?: string };
-    if (!res.ok) {
-      throw new Error(data.error || data.detail || `Agora API ${res.status}: ${text.slice(0, 200)}`);
+      return data as T;
+    } catch (err) {
+      lastErr = err;
+      if (isRetriableConnError(err) && i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 300 * Math.pow(3, i)));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-    return data as T;
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastErr;
 }
 
 export async function fetchAppSseEvents(
