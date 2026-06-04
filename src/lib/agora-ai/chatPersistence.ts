@@ -55,6 +55,8 @@ export interface AgentChatRecord {
   totalTokens: number;
 }
 
+export type AgentMessageStatus = 'running' | 'complete' | 'truncated' | 'error';
+
 export interface AgentChatMessageRecord {
   id: string;
   role: 'user' | 'assistant' | 'tool';
@@ -64,7 +66,14 @@ export interface AgentChatMessageRecord {
   toolCalls?: unknown[];
   toolResults?: unknown[];
   citations?: unknown[];
+  status?: AgentMessageStatus;
 }
+
+const MESSAGE_STATUS_VALUES = ['running', 'complete', 'truncated', 'error'] as const;
+const asMessageStatus = (value: unknown): AgentMessageStatus | undefined =>
+  (MESSAGE_STATUS_VALUES as readonly string[]).includes(value as string)
+    ? (value as AgentMessageStatus)
+    : undefined;
 
 const MAX_LIST_LIMIT = 200;
 const DEFAULT_LIST_LIMIT = 30;
@@ -94,6 +103,27 @@ const toMillis = (value: unknown): number => {
 
 const chatsCol = (uid: string) => adminDb.collection('users').doc(uid).collection('agentChats');
 const messagesCol = (uid: string, chatId: string) => chatsCol(uid).doc(chatId).collection('messages');
+
+// Firestore rechaza claves de mapa vacías ("") con
+// "Element at index 0 should not be an empty string". Los payloads de tool
+// results pueden traerlas (ej. `folderDocCountMap` con la raíz como ""), lo que
+// haría fallar la escritura y dejar el mensaje assistant atascado en
+// status:"running" para siempre. Reescribimos esas claves a "(raíz)" en
+// profundidad para que la persistencia del progreso nunca se rompa por la
+// forma del output de una tool.
+const sanitizeFirestoreKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sanitizeFirestoreKeys);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k === '' ? '(raíz)' : k] = sanitizeFirestoreKeys(v);
+    }
+    return out;
+  }
+  return value;
+};
+const sanitizeToolPayload = (items: unknown[]): unknown[] =>
+  items.map((item) => sanitizeFirestoreKeys(item));
 
 export class ChatLimitExceededError extends Error {
   readonly limit: number;
@@ -220,9 +250,9 @@ export const appendChatMessage = async (uid: string, chatId: string, payload: Ch
     ts
   };
   if (typeof payload.tokens === 'number' && payload.tokens > 0) data.tokens = payload.tokens;
-  if (payload.toolCalls && payload.toolCalls.length) data.toolCalls = payload.toolCalls;
-  if (payload.toolResults && payload.toolResults.length) data.toolResults = payload.toolResults;
-  if (payload.citations && payload.citations.length) data.citations = payload.citations;
+  if (payload.toolCalls && payload.toolCalls.length) data.toolCalls = sanitizeToolPayload(payload.toolCalls);
+  if (payload.toolResults && payload.toolResults.length) data.toolResults = sanitizeToolPayload(payload.toolResults);
+  if (payload.citations && payload.citations.length) data.citations = sanitizeToolPayload(payload.citations);
   await ref.set(data);
   // Tocar updatedAt + sumar tokens en parent.
   const tokensInc = typeof payload.tokens === 'number' && payload.tokens > 0 ? payload.tokens : 0;
@@ -231,6 +261,49 @@ export const appendChatMessage = async (uid: string, chatId: string, payload: Ch
     ...(tokensInc > 0 ? { totalTokens: FieldValue.increment(tokensInc) } : {})
   });
   return { id: ref.id, role: payload.role, content: payload.content, ts, ...(typeof payload.tokens === 'number' && payload.tokens > 0 ? { tokens: payload.tokens } : {}), ...(payload.toolCalls ? { toolCalls: payload.toolCalls } : {}), ...(payload.toolResults ? { toolResults: payload.toolResults } : {}), ...(payload.citations ? { citations: payload.citations } : {}) };
+};
+
+/**
+ * Crea/actualiza incrementalmente el mensaje assistant de un turno mientras el
+ * stream corre. El caller fija `msgId` (estable durante todo el run) y `ts`
+ * (timestamp en ms, FIJO para que el orden por `ts` no cambie entre updates),
+ * y vuelve a llamar con el progreso (steps acumulados) y al final con el reply
+ * completo + status terminal. Usa `set(..., { merge:true })` para que una sola
+ * fila assistant represente el turno entero, sin duplicar.
+ *
+ * Tokens: para no doble-contar `totalTokens` del chat parent, sólo se suma el
+ * incremento cuando `payload.tokens` viene (el caller lo pasa únicamente en el
+ * upsert final), nunca en los updates intermedios `running`.
+ */
+export const upsertStreamingAssistantMessage = async (
+  uid: string,
+  chatId: string,
+  msgId: string,
+  ts: number,
+  payload: {
+    content: string;
+    status: AgentMessageStatus;
+    toolCalls?: unknown[];
+    toolResults?: unknown[];
+    tokens?: number;
+  }
+): Promise<void> => {
+  const ref = messagesCol(uid, chatId).doc(msgId);
+  const data: Record<string, unknown> = {
+    role: 'assistant',
+    content: payload.content,
+    ts,
+    status: payload.status
+  };
+  if (typeof payload.tokens === 'number' && payload.tokens > 0) data.tokens = payload.tokens;
+  if (payload.toolCalls && payload.toolCalls.length) data.toolCalls = sanitizeToolPayload(payload.toolCalls);
+  if (payload.toolResults && payload.toolResults.length) data.toolResults = sanitizeToolPayload(payload.toolResults);
+  await ref.set(data, { merge: true });
+  const tokensInc = typeof payload.tokens === 'number' && payload.tokens > 0 ? payload.tokens : 0;
+  await chatsCol(uid).doc(chatId).update({
+    updatedAt: Date.now(),
+    ...(tokensInc > 0 ? { totalTokens: FieldValue.increment(tokensInc) } : {})
+  });
 };
 
 export const listChatMessages = async (uid: string, chatId: string, params: {
@@ -256,7 +329,8 @@ export const listChatMessages = async (uid: string, chatId: string, params: {
       ...(typeof data.tokens === 'number' && data.tokens > 0 ? { tokens: data.tokens } : {}),
       ...(Array.isArray(data.toolCalls) ? { toolCalls: data.toolCalls } : {}),
       ...(Array.isArray(data.toolResults) ? { toolResults: data.toolResults } : {}),
-      ...(Array.isArray(data.citations) ? { citations: data.citations } : {})
+      ...(Array.isArray(data.citations) ? { citations: data.citations } : {}),
+      ...(asMessageStatus(data.status) ? { status: asMessageStatus(data.status) } : {})
     };
   });
   const nextCursor = snap.docs.length > params.limit ? (docs[docs.length - 1]?.id ?? null) : null;

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextRequest } from '@/lib/http/next-server';
 import { requireAuth, isWorkspaceMember, getTokenFromRequest } from '@/lib/server-auth';
 import { buildAgoraWorkspaceContext } from '@/lib/agora-ai/context';
@@ -19,6 +20,7 @@ import type { AgentMode, AgentRequestBody, AgentStreamEvent, AIProvider } from '
 import { isPersonalWorkspaceId } from '@/types/workspace';
 import {
   appendChatMessage,
+  upsertStreamingAssistantMessage,
   createAgentChat,
   deriveChatTitleFromContent,
   getAgentChat,
@@ -316,6 +318,78 @@ export async function POST(request: NextRequest) {
 
       request.signal.addEventListener('abort', close, { once: true });
 
+      // --- Estado del mensaje assistant persistido incrementalmente ----------
+      // El doc se crea con status:"running" tras persistir el user; se actualiza
+      // throttleado durante el run (steps como progreso) y se finaliza con el
+      // reply completo + status terminal. Una sola fila por turno (mismo msgId).
+      let assistantMsgId: string | null = null;
+      let assistantTs = 0;
+      const liveToolCalls: unknown[] = [];
+      const liveToolResults: unknown[] = [];
+      let lastUpsertAt = 0;
+      let upsertPending = false;
+      let upsertInFlight = false;
+      let inFlightUpsert: Promise<void> = Promise.resolve();
+      const UPSERT_THROTTLE_MS = 1500;
+      let assistantFinalized = false;
+
+      // Flush throttleado del progreso parcial. No escribe en cada step: como
+      // mucho 1 vez cada UPSERT_THROTTLE_MS; si llega un step dentro de la
+      // ventana, deja `upsertPending` y se escribe en el próximo intento.
+      const flushRunningUpsert = (force = false): void => {
+        if (!assistantMsgId || !activeChatId || assistantFinalized) return;
+        const now = Date.now();
+        if (!force && (upsertInFlight || now - lastUpsertAt < UPSERT_THROTTLE_MS)) {
+          upsertPending = true;
+          return;
+        }
+        upsertPending = false;
+        lastUpsertAt = now;
+        upsertInFlight = true;
+        inFlightUpsert = upsertStreamingAssistantMessage(auth.uid, activeChatId, assistantMsgId, assistantTs, {
+          content: '',
+          status: 'running',
+          ...(liveToolCalls.length ? { toolCalls: [...liveToolCalls] } : {}),
+          ...(liveToolResults.length ? { toolResults: [...liveToolResults] } : {})
+        }).catch((error) => {
+          console.warn('[agora-ai/stream] upsert running assistant falló:', error instanceof Error ? error.message : error);
+        }).finally(() => {
+          upsertInFlight = false;
+          if (upsertPending && !assistantFinalized) flushRunningUpsert();
+        });
+      };
+
+      // Finaliza el doc assistant con un status terminal y el contenido que haya
+      // (parcial en error/truncado). Idempotente: solo finaliza una vez.
+      const finalizeAssistantDoc = async (
+        status: 'complete' | 'truncated' | 'error',
+        content: string,
+        tokens: number
+      ): Promise<void> => {
+        if (!assistantMsgId || !activeChatId || assistantFinalized) return;
+        // Marcar finalizado ANTES de esperar el upsert en vuelo: esto impide que
+        // su `.finally` dispare un nuevo flush `running`. Luego esperamos a que
+        // el upsert en vuelo termine de escribir, así su `status:"running"` no
+        // puede aterrizar DESPUÉS del status terminal y dejar el doc atascado.
+        assistantFinalized = true;
+        try {
+          await inFlightUpsert;
+        } catch {
+          // el error del upsert en vuelo ya se logueó en su propio .catch
+        }
+        try {
+          await upsertStreamingAssistantMessage(auth.uid, activeChatId, assistantMsgId, assistantTs, {
+            content,
+            status,
+            ...(liveToolCalls.length ? { toolCalls: [...liveToolCalls] } : {}),
+            ...(liveToolResults.length ? { toolResults: [...liveToolResults] } : {}),
+            ...(tokens > 0 ? { tokens } : {})
+          });
+        } catch (error) {
+          console.warn('[agora-ai/stream] finalizar assistant falló:', error instanceof Error ? error.message : error);
+        }
+      };
+
       const startedAt = Date.now();
       const softTimeout = setTimeout(() => {
         // Cuando se acerca el cutoff de Vercel emitimos un complete parcial
@@ -344,7 +418,9 @@ export async function POST(request: NextRequest) {
           durationMs: Date.now() - startedAt,
           status: 'truncated'
         });
-        close();
+        // Si el doc assistant ya existe, finalizarlo como truncado con el
+        // progreso parcial antes de cerrar — un reload muestra el estado real.
+        void finalizeAssistantDoc('truncated', '', 0).finally(close);
       }, SOFT_BUDGET_MS);
 
       void (async () => {
@@ -365,6 +441,19 @@ export async function POST(request: NextRequest) {
                 console.warn('[agora-ai/stream] no se pudo persistir mensaje user:', error instanceof Error ? error.message : error);
               });
             }
+            // Crear ya el doc assistant en status:"running" con un id estable.
+            // `assistantTs` se captura UNA vez y se reusa en todos los upserts
+            // para que el orden por `ts` no cambie. Lo emitimos al cliente para
+            // que pueda reconciliar al recargar (poll por messageId).
+            assistantMsgId = randomUUID();
+            assistantTs = Date.now();
+            void upsertStreamingAssistantMessage(auth.uid, activeChatId, assistantMsgId, assistantTs, {
+              content: '',
+              status: 'running'
+            }).catch((error) => {
+              console.warn('[agora-ai/stream] no se pudo crear doc assistant inicial:', error instanceof Error ? error.message : error);
+            });
+            send({ type: 'assistant-message', messageId: assistantMsgId, chatId: activeChatId });
           }
           send({ type: 'status', status: 'Preparando contexto del workspace…' });
 
@@ -406,7 +495,15 @@ export async function POST(request: NextRequest) {
             },
             callbacks: {
               onStatus: async (status) => send({ type: 'status', status }),
-              onStep: async (step) => send({ type: 'step', step }),
+              onStep: async (step) => {
+                send({ type: 'step', step });
+                // Acumular el progreso en los mismos buckets que usa el upsert
+                // final (tool_call → toolCalls, tool_result/error → toolResults)
+                // y persistirlo throttleado como status:"running".
+                if (step.type === 'tool_call' && step.call) liveToolCalls.push(step.call);
+                if ((step.type === 'tool_result' || step.type === 'error') && step.result) liveToolResults.push(step.result);
+                flushRunningUpsert();
+              },
               onContextTruncated: async (removedCount, summary) =>
                 send({ type: 'context-truncated', removedCount, summary })
             },
@@ -414,25 +511,23 @@ export async function POST(request: NextRequest) {
           });
 
           clearTimeout(softTimeout);
-          if (activeChatId && agentRun.finalReply) {
-            const toolCalls: unknown[] = [];
-            const toolResults: unknown[] = [];
+          if (activeChatId && assistantMsgId) {
+            // Set autoritativo de tool calls/results del run completo, por si el
+            // throttle se saltó el último step. Reemplaza los buckets vivos.
+            liveToolCalls.length = 0;
+            liveToolResults.length = 0;
             for (const step of agentRun.steps) {
-              if (step.type === 'tool_call' && step.call) toolCalls.push(step.call);
-              if ((step.type === 'tool_result' || step.type === 'error') && step.result) toolResults.push(step.result);
+              if (step.type === 'tool_call' && step.call) liveToolCalls.push(step.call);
+              if ((step.type === 'tool_result' || step.type === 'error') && step.result) liveToolResults.push(step.result);
             }
             const tokens = agentRun.usage?.totalTokens && agentRun.usage.totalTokens > 0
               ? agentRun.usage.totalTokens
               : 0;
-            appendChatMessage(auth.uid, activeChatId, {
-              role: 'assistant',
-              content: agentRun.finalReply,
-              ...(toolCalls.length ? { toolCalls } : {}),
-              ...(toolResults.length ? { toolResults } : {}),
-              ...(tokens ? { tokens } : {})
-            }).catch((error) => {
-              console.warn('[agora-ai/stream] no se pudo persistir mensaje assistant:', error instanceof Error ? error.message : error);
-            });
+            await finalizeAssistantDoc(
+              agentRun.truncated ? 'truncated' : 'complete',
+              agentRun.finalReply,
+              tokens
+            );
           }
           send({ type: 'complete', reply: agentRun.finalReply, agentRun, ...(activeChatId ? { chatId: activeChatId } : {}) });
 
@@ -460,6 +555,10 @@ export async function POST(request: NextRequest) {
           clearTimeout(softTimeout);
           const message = error instanceof Error ? error.message : 'Unknown error';
           console.error('[agora-ai/stream]', message);
+          // Si ya existe el doc assistant, finalizarlo como error con el
+          // progreso parcial (steps) antes de cerrar, para que un reload no
+          // quede atascado en status:"running".
+          await finalizeAssistantDoc('error', '', 0);
           send({ type: 'error', error: message });
           logAbuseSignal({
             uid: auth.uid,

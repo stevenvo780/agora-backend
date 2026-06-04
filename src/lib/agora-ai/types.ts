@@ -201,6 +201,7 @@ export interface AgentDiagnosticEventDetail {
 export type AgentStreamEvent =
   | { type: 'connected' }
   | { type: 'chat-created'; chatId: string }
+  | { type: 'assistant-message'; messageId: string; chatId: string }
   | { type: 'status'; status: string }
   | { type: 'step'; step: AgentTraceStep }
   | { type: 'context-truncated'; removedCount: number; summary: string }
