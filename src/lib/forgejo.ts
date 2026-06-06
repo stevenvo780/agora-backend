@@ -391,6 +391,61 @@ export const issueTokenForUser = async (uid: string, tokenName: string, scopes: 
   return parsed.ok ? parsed.value.sha1 : null;
 };
 
+export interface WorkerGitCreds {
+  cloneUrl: string;
+  gitUser: string;
+  gitToken: string;
+  repoFullName: string;
+}
+
+/**
+ * Credenciales git para que un worker configure su remote Forgejo on-demand.
+ * - Personal: usa la cuenta propia del usuario (`agora-<uid>`).
+ * - Shared: usa un bot por-workspace (`agora-ws-<wsId>`) con acceso de escritura
+ *   SOLO a ese repo — así un worker compartido nunca expone un token con alcance
+ *   a otros repos del dueño.
+ * Emite un token fresco cada vez (prefijo `agora-worker-`, sin sprawl).
+ */
+export const getWorkerGitCreds = async (params: {
+  workspaceId: string;
+  ownerUid: string;
+  isPersonal: boolean;
+  userId: string | null;
+  workspaceName?: string;
+}): Promise<WorkerGitCreds | null> => {
+  const prov = await provisionWorkspaceRepo({
+    ownerUid: params.ownerUid,
+    workspaceId: params.workspaceId,
+    workspaceName: params.workspaceName
+  });
+  const repoName = repoNameForWorkspace(params.workspaceId, params.ownerUid);
+  const tokenName = `agora-worker-${Date.now()}`;
+
+  if (params.isPersonal && params.userId) {
+    const token = await issueTokenForUser(params.userId, tokenName);
+    if (!token) return null;
+    return {
+      cloneUrl: prov.repo.clone_url,
+      gitUser: userLoginFor(params.userId),
+      gitToken: token,
+      repoFullName: prov.repo.full_name
+    };
+  }
+
+  // Shared → bot Forgejo dedicado, con escritura sólo a este repo.
+  const botUid = `ws-${params.workspaceId}`;
+  await ensureForgejoUser(botUid);
+  await grantWriteAccess(repoName, userLoginFor(botUid));
+  const token = await issueTokenForUser(botUid, tokenName);
+  if (!token) return null;
+  return {
+    cloneUrl: prov.repo.clone_url,
+    gitUser: userLoginFor(botUid),
+    gitToken: token,
+    repoFullName: prov.repo.full_name
+  };
+};
+
 export interface MigrateRepoParams {
   ownerUid: string;
   email?: string;
