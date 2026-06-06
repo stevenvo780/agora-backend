@@ -76,7 +76,13 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Blob not found in NAS — upload first' }, { status: 412 });
         }
 
-        const { folder, name } = splitRepoPath(repoPath);
+        // La raíz es una ubicación real: un archivo suelto (repoPath sin "/") se
+        // queda en la raíz (folder ""), NO en la carpeta sintética "No estructurado"
+        // que splitRepoPath le pone por default a TODO archivo de raíz. Un path real
+        // "No estructurado/x" (con "/") se respeta tal cual: su migración a raíz va
+        // aparte para no duplicar docs legacy (el match existente es por (name, folder)).
+        const { folder: rawFolder, name } = splitRepoPath(repoPath);
+        const folder = repoPath.includes('/') ? rawFolder : '';
         const { type: inferredType, mimeType: inferredMime } = inferType(name, mimeType ?? undefined);
 
         const MAX_SEARCHABLE_FETCH_BYTES = 256 * 1024;
