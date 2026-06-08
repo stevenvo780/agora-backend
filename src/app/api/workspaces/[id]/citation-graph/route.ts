@@ -39,12 +39,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<Record<string
       return NextResponse.json({ error: 'workspaceId requerido' }, { status: 400 });
     }
     if (isPersonalWorkspaceId(workspaceId)) {
+      // Acepta el alias 'personal' (se resuelve al workspace personal del caller)
+      // o la clave compuesta 'personal:<uid>' mientras sea del propio uid.
       const prefix = 'personal:';
-      if (!workspaceId.startsWith(prefix)) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-      }
-      const ownerUid = workspaceId.slice(prefix.length);
-      if (ownerUid !== auth.uid) {
+      if (workspaceId.startsWith(prefix) && workspaceId.slice(prefix.length) !== auth.uid) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
     } else {
@@ -53,6 +51,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<Record<string
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
     }
+    // Resuelve el alias 'personal' a la clave de almacenamiento 'personal:<uid>'
+    // (igual que /api/semantic), para que el grafo cargue el workspace correcto.
+    const storageId = isPersonalWorkspaceId(workspaceId) ? `personal:${auth.uid}` : workspaceId;
 
     const url = req.nextUrl;
     const focus = parseFocus(url.searchParams.get('focus'));
@@ -62,11 +63,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<Record<string
     // Si no se pasa focus, devolvemos el subgrafo workspace-wide: foco = todos
     // los documentos del workspace. expandSubgraph aplica caps (maxNodes 500,
     // maxEdges 2000), así no se cuelga en workspaces grandes.
-    const docMetaIndex = await loadWorkspaceDocMetaIndex(workspaceId, auth.uid);
+    const docMetaIndex = await loadWorkspaceDocMetaIndex(storageId, auth.uid);
     const focusDocIds = focus.length > 0 ? focus : Array.from(docMetaIndex.keys());
 
     const subgraph = await expandSubgraph({
-      workspaceId,
+      workspaceId: storageId,
       uid: auth.uid,
       focusDocIds,
       depth,
