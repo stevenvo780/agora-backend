@@ -162,13 +162,21 @@ export async function GET(req: NextRequest) {
             )
         ).filter((item): item is WorkerListItem => item !== null);
 
+        // El cursor DEBE derivarse del último doc que Firestore devolvió en esta
+        // página (snap.docs), NO del último item filtrado: si el final de la
+        // página son folders o docs sin storagePath (filtrados a null), usar el
+        // último item haría que una página entera filtrada (items.length === 0)
+        // dejara nextCursor en null y cortara la paginación, perdiendo los docs
+        // posteriores.
         let nextCursor: string | null = null;
-        if (snap.size >= limit && items.length > 0) {
-            const lastItem = items[items.length - 1];
-            if (lastItem && lastItem.updatedAt !== null) {
+        if (snap.size >= limit && snap.size > 0) {
+            const lastDoc = snap.docs[snap.size - 1];
+            const lastUpdatedAt = lastDoc?.get('updatedAt');
+            const lastUpdatedMs = lastUpdatedAt instanceof Timestamp ? lastUpdatedAt.toMillis() : null;
+            if (lastDoc && lastUpdatedMs !== null) {
                 nextCursor = encodeWorkerListCursor({
-                    updatedAtMs: lastItem.updatedAt,
-                    id: lastItem.docId
+                    updatedAtMs: lastUpdatedMs,
+                    id: lastDoc.id
                 });
             }
         }
