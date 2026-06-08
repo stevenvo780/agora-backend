@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from '@/lib/http/next-server';
 import { MercadoPagoConfig, Payment } from 'mercadopago';
 import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
-import { SubscriptionStatus, type PlanId } from '@/types/subscription';
+import { SubscriptionStatus, isPlanId, type PlanId } from '@/types/subscription';
 import { calculateSmartEndDate } from '@/app/api/payments/helpers';
 import {
   MercadoPagoNotificationType,
@@ -78,6 +78,12 @@ export async function POST(req: NextRequest) {
 
       if (!userId || !planId) {
         console.warn('Invalid external_reference:', payment.external_reference);
+        return NextResponse.json({ received: true });
+      }
+
+      if (!isPlanId(planId)) {
+        console.warn('[Webhook] planId inválido en external_reference:', planId);
+        await logPaymentEvent({ kind: 'webhook-invalid-plan', userId, planId, paymentId: String(paymentId) });
         return NextResponse.json({ received: true });
       }
 

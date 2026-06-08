@@ -3,7 +3,7 @@ import { MercadoPagoConfig, Payment } from 'mercadopago';
 import { requireAuth } from '@/lib/server-auth';
 import { adminDb } from '@/lib/firebase-admin';
 import { getErrorMessage } from '@/lib/error-utils';
-import { SubscriptionStatus, type PlanId } from '@/types/subscription';
+import { SubscriptionStatus, isPlanId, type PlanId } from '@/types/subscription';
 import { calculateSmartEndDate } from '@/app/api/payments/helpers';
 import { parsePaymentExternalReference } from '@/app/api/payments/payment-reference';
 import { MercadoPagoPaymentStatus } from '@/types/payments';
@@ -58,6 +58,9 @@ export async function POST(req: NextRequest) {
 
     if (!planId) {
       return NextResponse.json({ error: 'No se pudo resolver el plan asociado al pago' }, { status: 400 });
+    }
+    if (!isPlanId(planId)) {
+      return NextResponse.json({ error: 'Plan inválido' }, { status: 400 });
     }
 
     if (payment.status === MercadoPagoPaymentStatus.Approved) {

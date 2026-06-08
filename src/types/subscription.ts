@@ -46,12 +46,12 @@ export const PLANS: Record<PlanId, PlanConfig> = {
       'Acceso al editor',
       'Documentos ilimitados',
       'Workspaces personales',
-      '50 MB de almacenamiento'
+      '100 MB de almacenamiento'
     ],
     hasTerminals: false,
     hasDedicatedMachine: false,
     contactRequired: false,
-    storageLimitMB: 50
+    storageLimitMB: 100
   },
   [Plan.Basic]: {
     id: Plan.Basic,
@@ -63,12 +63,12 @@ export const PLANS: Record<PlanId, PlanConfig> = {
       'Workspaces colaborativos',
       'Tableros Kanban',
       'Soporte por email',
-      '1 GB de almacenamiento'
+      '2 GB de almacenamiento'
     ],
     hasTerminals: false,
     hasDedicatedMachine: false,
     contactRequired: false,
-    storageLimitMB: 1024
+    storageLimitMB: 2048
   },
   [Plan.Pro]: {
     id: Plan.Pro,
@@ -80,12 +80,12 @@ export const PLANS: Record<PlanId, PlanConfig> = {
       'Terminales ilimitadas',
       'Acceso completo a workers',
       'Soporte prioritario',
-      '1 GB de almacenamiento'
+      '20 GB de almacenamiento'
     ],
     hasTerminals: true,
     hasDedicatedMachine: false,
     contactRequired: false,
-    storageLimitMB: 1024
+    storageLimitMB: 20480
   },
   [Plan.Enterprise]: {
     id: Plan.Enterprise,
@@ -98,12 +98,12 @@ export const PLANS: Record<PlanId, PlanConfig> = {
       'Terminal dedicada',
       'Soporte personalizado',
       'Configuración a medida',
-      '10 GB de almacenamiento'
+      'Almacenamiento ilimitado'
     ],
     hasTerminals: true,
     hasDedicatedMachine: true,
     contactRequired: true,
-    storageLimitMB: 10240
+    storageLimitMB: 1048576
   }
 };
 
@@ -134,6 +134,7 @@ export function getStorageLimitMB(planId: PlanId): number {
 }
 
 export function formatStorageSize(mb: number): string {
+  if (mb >= 1024 * 1024) return 'Ilimitado';
   if (mb >= 1024) return `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)} GB`;
   return `${mb} MB`;
 }
