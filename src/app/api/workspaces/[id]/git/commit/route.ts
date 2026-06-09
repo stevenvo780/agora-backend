@@ -17,11 +17,37 @@ import { buildRepoPath } from '@/lib/forgejo-path';
 import { loadWorkspaceIgnore, isIgnoredPath } from '@/lib/forgejo-ignore';
 import { isNasConfigured, getObjectBuffer } from '@/lib/nas-storage';
 import { getErrorMessage } from '@/lib/error-utils';
-import crypto from 'node:crypto';
 
 export const maxDuration = 800;
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
+
+// Commit-en-VPS: en vez de leer los blobs acá (Cloud Run, RAM limitada → OOM con
+// commits grandes) y mandar el body entero a Forgejo, le mandamos al Hub (en
+// agora-storage, junto a MinIO+Forgejo locales) solo la LISTA de archivos; el Hub
+// lee los blobs local + pushea local. Si el Hub no responde, caemos al path
+// in-process (fallback), así nunca rompemos commits chicos.
+const HUB_URL = (process.env.NEXUS_URL || 'https://hub.elenxos.com').replace(/\/$/, '');
+const HUB_SECRET = (process.env.HUB_INTERNAL_SECRET || process.env.BACKEND_INTERNAL_SECRET || '').trim();
+interface HubCommitFile { repoPath: string; operation: 'create' | 'update' | 'delete'; storagePath?: string; sha?: string }
+const commitViaHub = async (params: {
+    repoFullName: string; message: string; files: HubCommitFile[]; authorName?: string; authorEmail?: string;
+}): Promise<{ ok: boolean; sha?: string } | null> => {
+    if (!HUB_SECRET) return null;
+    try {
+        const res = await fetch(`${HUB_URL}/internal/git-commit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-hub-internal-secret': HUB_SECRET },
+            body: JSON.stringify({ repoFullName: params.repoFullName, branch: 'main', message: params.message, authorName: params.authorName, authorEmail: params.authorEmail, files: params.files })
+        });
+        if (!res.ok) { console.warn('[git/commit] hub commit HTTP', res.status); return null; }
+        const j = await res.json() as { ok?: boolean; sha?: string };
+        return j.ok ? { ok: true, sha: j.sha } : null;
+    } catch (e) {
+        console.warn('[git/commit] hub commit fallback:', (e as Error).message);
+        return null;
+    }
+};
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -62,8 +88,8 @@ export async function POST(req: NextRequest, context: RouteContext) {
         // Cargar docs y construir changes
         const refs = docIds.map((id) => adminDb.collection('documents').doc(id));
         const snaps = await adminDb.getAll(...refs);
-        const changes: CommitChange[] = [];
-        const planned: { docId: string; repoPath: string; ref: typeof refs[number] }[] = [];
+        const planned: { docId: string; repoPath: string; ref: typeof refs[number]; contentHash: string | null }[] = [];
+        const hubFiles: HubCommitFile[] = [];
 
         // Filtrar antes de descargar buffers evita gastar MinIO+Forgejo en
         // archivos ignorados aunque el cliente los seleccione.
@@ -84,12 +110,11 @@ export async function POST(req: NextRequest, context: RouteContext) {
             console.warn('[git/commit] preTree fetch failed (repo recién creado?):', (e as Error).message);
         }
 
-        // Concurrencia limitada solo para descargas MinIO (no Forgejo).
         const BATCH = 8;
         let skippedIgnored = 0;
         const candidates = snaps.filter(s => s.exists).map(s => ({ snap: s, data: s.data() as {
             workspaceId?: string; ownerId?: string; name?: string; folder?: string;
-            storagePath?: string; git?: { lastSha?: string };
+            storagePath?: string; contentHash?: string; git?: { lastSha?: string };
         } })).filter(({ data }) => {
             if (!data.storagePath) return true;
             const repoPath = buildRepoPath(data.folder, data.name);
@@ -97,37 +122,41 @@ export async function POST(req: NextRequest, context: RouteContext) {
             return true;
         });
 
-        for (let i = 0; i < candidates.length; i += BATCH) {
-            const batch = candidates.slice(i, i + BATCH);
-            const built = await Promise.all(batch.map(async ({ snap, data }) => {
-                const wsMatches = isPersonalWorkspaceId(workspaceId)
-                    ? (data.workspaceId === PERSONAL_WORKSPACE_ID && data.ownerId === auth.uid)
-                    : data.workspaceId === workspaceId;
-                if (!wsMatches) return null;
-                if (!data.storagePath) return null;
-
-                const repoPath = buildRepoPath(data.folder, data.name);
-                const buf = await getObjectBuffer(data.storagePath);
-                if (!buf) return null;
-
-                const shaIfUpdate: string | undefined = data.git?.lastSha ?? preTree.get(repoPath);
-                return { snap, repoPath, change: {
-                    path: repoPath,
-                    content: buf,
-                    operation: shaIfUpdate ? 'update' as const : 'create' as const,
-                    ...(shaIfUpdate ? { shaIfUpdate } : {})
-                } };
-            }));
-            for (const item of built) {
-                if (!item) continue;
-                changes.push(item.change as CommitChange);
-                planned.push({ docId: item.snap.id, repoPath: item.repoPath, ref: item.snap.ref });
-            }
+        // Lista de archivos (metadata, SIN leer blobs) → se la mandamos al Hub.
+        const fileMeta: { storagePath: string; repoPath: string; operation: 'create' | 'update'; sha?: string }[] = [];
+        for (const { snap, data } of candidates) {
+            const wsMatches = isPersonalWorkspaceId(workspaceId)
+                ? (data.workspaceId === PERSONAL_WORKSPACE_ID && data.ownerId === auth.uid)
+                : data.workspaceId === workspaceId;
+            if (!wsMatches || !data.storagePath) continue;
+            const repoPath = buildRepoPath(data.folder, data.name);
+            const shaIfUpdate: string | undefined = data.git?.lastSha ?? preTree.get(repoPath);
+            const operation = shaIfUpdate ? 'update' as const : 'create' as const;
+            fileMeta.push({ storagePath: data.storagePath, repoPath, operation, ...(shaIfUpdate ? { sha: shaIfUpdate } : {}) });
+            hubFiles.push({ repoPath, operation, storagePath: data.storagePath, ...(shaIfUpdate ? { sha: shaIfUpdate } : {}) });
+            planned.push({ docId: snap.id, repoPath, ref: snap.ref, contentHash: data.contentHash ?? null });
         }
 
-        if (changes.length === 0) {
+        if (fileMeta.length === 0) {
             return NextResponse.json({ error: 'No hay archivos para commitear' }, { status: 400 });
         }
+
+        // Fallback (solo si el Hub no responde): leer los blobs de MinIO acá y
+        // commitear in-process. Path original — bufferea en Cloud Run (puede OOM
+        // con commits grandes), por eso el Hub es el camino primario.
+        const buildChangesFromBlobs = async (): Promise<CommitChange[]> => {
+            const ch: CommitChange[] = [];
+            for (let i = 0; i < fileMeta.length; i += BATCH) {
+                const batch = fileMeta.slice(i, i + BATCH);
+                const built = await Promise.all(batch.map(async (f) => {
+                    const buf = await getObjectBuffer(f.storagePath);
+                    if (!buf) return null;
+                    return { path: f.repoPath, content: buf, operation: f.operation, ...(f.sha ? { shaIfUpdate: f.sha } : {}) } as CommitChange;
+                }));
+                for (const c of built) if (c) ch.push(c);
+            }
+            return ch;
+        };
 
         // SSE: text/event-stream evita buffering del proxy de Vercel.
         const encoder = new TextEncoder();
@@ -146,21 +175,24 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
                 (async () => {
                     try {
-                        const result = await applyCommit({
-                            repoFullName,
-                            branch: 'main',
-                            message,
-                            changes,
-                            authorName,
-                            authorEmail,
-                            onProgress: (ev) => send({
-                                event: 'progress',
-                                ...ev,
-                                // compat: el cliente actual lee totalChunks; ahora 1
-                                // commit = 1 chunk lógico, así que reportamos 1.
-                                totalChunks: 1
-                            })
-                        });
+                        let result: { ok: boolean; newSha?: string; errors: { path: string }[] };
+                        const totalFiles = hubFiles.length;
+                        // Camino PRIMARIO: commit-en-VPS (Hub lee MinIO local + pushea
+                        // Forgejo local). Sin leer blobs acá → sin OOM en Cloud Run.
+                        const hubRes = await commitViaHub({ repoFullName, message, files: hubFiles, authorName, authorEmail });
+                        if (hubRes && hubRes.ok) {
+                            result = { ok: true, newSha: hubRes.sha, errors: [] };
+                            send({ event: 'progress', kind: 'done', via: 'vps-hub', totalFiles, totalChunks: 1 });
+                        } else {
+                            // Fallback in-process (Hub caído): leer blobs + commit acá.
+                            send({ event: 'progress', kind: 'fallback', note: 'commit en backend (Hub no disponible)', totalFiles, totalChunks: 1 });
+                            const changes = await buildChangesFromBlobs();
+                            const r = await applyCommit({
+                                repoFullName, branch: 'main', message, changes, authorName, authorEmail,
+                                onProgress: (ev) => send({ event: 'progress', ...ev, totalChunks: 1 })
+                            });
+                            result = { ok: r.ok, newSha: r.newSha, errors: r.errors };
+                        }
 
                         const okPaths = new Set(planned.map(p => p.repoPath).filter(p => !result.errors.some(e => e.path === p)));
                         send({ event: 'persist', total: okPaths.size });
@@ -171,19 +203,15 @@ export async function POST(req: NextRequest, context: RouteContext) {
                             console.warn('[git/commit] postTree fetch failed:', (err as Error).message);
                         }
                         let persisted = 0;
-                        for (let i = 0; i < planned.length; i++) {
-                            const p = planned[i];
+                        for (const p of planned) {
                             if (!okPaths.has(p.repoPath)) continue;
                             try {
                                 const treeSha = postTree.get(p.repoPath);
-                                const change = changes[i];
-                                const buf = (change as { content?: Buffer }).content;
-                                const computedHash = buf ? crypto.createHash('sha256').update(buf).digest('hex') : null;
+                                // El commit no cambia el contenido: conservamos el contentHash
+                                // del doc (ya correcto del sync) y solo registramos git.lastSha.
                                 await p.ref.set({
-                                    contentHash: computedHash ?? FieldValue.delete(),
-                                    size: buf ? buf.length : FieldValue.delete(),
                                     git: {
-                                        committedHash: computedHash,
+                                        committedHash: p.contentHash,
                                         lastSha: treeSha ?? null,
                                         repoFullName,
                                         lastCommitMessage: message,
@@ -201,7 +229,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
                         send({
                             event: 'done',
                             ok: result.ok,
-                            committedCount: changes.length - result.errors.length,
+                            committedCount: okPaths.size,
                             failedCount: result.errors.length,
                             errors: result.errors,
                             newCommitSha: result.newSha ?? null,
