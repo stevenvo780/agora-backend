@@ -118,7 +118,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     ],
     hasTerminals: true,
     hasDedicatedMachine: true,
-    contactRequired: true,
+    contactRequired: false,
     storageLimitMB: 102400
   }
 };
