@@ -1,5 +1,6 @@
 export enum Plan {
   Free = 'free',
+  Student = 'student',
   Basic = 'basic',
   Pro = 'pro',
   Enterprise = 'enterprise'
@@ -8,7 +9,7 @@ export enum Plan {
 export type PlanId = `${Plan}`;
 
 export const PLAN_IDS = Object.values(Plan) as PlanId[];
-export const PLAN_ORDER = [Plan.Free, Plan.Basic, Plan.Pro, Plan.Enterprise] as const satisfies readonly PlanId[];
+export const PLAN_ORDER = [Plan.Free, Plan.Student, Plan.Basic, Plan.Pro, Plan.Enterprise] as const satisfies readonly PlanId[];
 
 const PLAN_ID_SET = new Set<PlanId>(PLAN_IDS);
 
@@ -53,27 +54,42 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     contactRequired: false,
     storageLimitMB: 100
   },
-  [Plan.Basic]: {
-    id: Plan.Basic,
-    name: 'Básico',
-    price: 30000,
+  [Plan.Student]: {
+    id: Plan.Student,
+    name: 'Estudiante',
+    price: 20000,
     currency: 'COP',
     features: [
       'Todo lo del plan Gratuito',
-      'Workspaces colaborativos',
-      'Tableros Kanban',
       'Soporte por email',
-      '2 GB de almacenamiento'
+      '1 GB de almacenamiento'
     ],
     hasTerminals: false,
     hasDedicatedMachine: false,
     contactRequired: false,
-    storageLimitMB: 2048
+    storageLimitMB: 1024
+  },
+  [Plan.Basic]: {
+    id: Plan.Basic,
+    name: 'Básico',
+    price: 50000,
+    currency: 'COP',
+    features: [
+      'Todo lo del plan Estudiante',
+      'Workspaces colaborativos',
+      'Tableros Kanban',
+      'Soporte por email',
+      '10 GB de almacenamiento'
+    ],
+    hasTerminals: false,
+    hasDedicatedMachine: false,
+    contactRequired: false,
+    storageLimitMB: 10240
   },
   [Plan.Pro]: {
     id: Plan.Pro,
     name: 'Pro',
-    price: 80000,
+    price: 120000,
     currency: 'COP',
     features: [
       'Todo lo del plan Básico',
@@ -90,7 +106,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
   [Plan.Enterprise]: {
     id: Plan.Enterprise,
     name: 'Enterprise',
-    price: 240000,
+    price: 320000,
     currency: 'COP',
     features: [
       'Todo lo del plan Pro',
@@ -98,12 +114,12 @@ export const PLANS: Record<PlanId, PlanConfig> = {
       'Terminal dedicada',
       'Soporte personalizado',
       'Configuración a medida',
-      'Almacenamiento ilimitado'
+      '100 GB de almacenamiento'
     ],
     hasTerminals: true,
     hasDedicatedMachine: true,
     contactRequired: true,
-    storageLimitMB: 1048576
+    storageLimitMB: 102400
   }
 };
 
