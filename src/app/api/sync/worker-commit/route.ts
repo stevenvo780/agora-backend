@@ -28,7 +28,20 @@ import { getErrorMessage } from '@/lib/error-utils';
 import { parseWorkerCommitPayload, splitRepoPath } from '@agora/contracts';
 import { computeSearchableContent } from '@/lib/search/searchable-content';
 import { invalidateAgoraWorkspaceContext } from '@/lib/agora-ai/context';
-import { invalidateStorageUsageCache } from '@/lib/storage-usage';
+import { adjustStorageUsageCache } from '@/lib/storage-usage';
+
+// ownerId de un workspace nunca cambia tras crearse; cachearlo evita un
+// point-get a Firestore en cada commit (push) del daemon.
+const _wsOwnerCache = new Map<string, { ownerId: string; ts: number }>();
+const WS_OWNER_TTL_MS = 10 * 60 * 1000;
+const getWorkspaceOwnerCached = async (wsId: string): Promise<string> => {
+    const c = _wsOwnerCache.get(wsId);
+    if (c && Date.now() - c.ts < WS_OWNER_TTL_MS) return c.ownerId;
+    const snap = await adminDb.collection('workspaces').doc(wsId).get();
+    const ownerId = (snap.data() as { ownerId?: string } | undefined)?.ownerId ?? '';
+    if (ownerId) _wsOwnerCache.set(wsId, { ownerId, ts: Date.now() });
+    return ownerId;
+};
 
 const TEXT_EXT = new Set([
     '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.toml', '.ini',
@@ -118,8 +131,7 @@ export async function POST(req: NextRequest) {
         // Owner para cuota — en personal es el propio uid; en shared es ownerId del workspace.
         let wsOwner = ctx.userId ?? '';
         if (!isPersonal) {
-            const wsSnapEarly = await adminDb.collection('workspaces').doc(ctx.workspaceId).get();
-            wsOwner = (wsSnapEarly.data() as { ownerId?: string } | undefined)?.ownerId ?? '';
+            wsOwner = await getWorkspaceOwnerCached(ctx.workspaceId);
         }
         if (!wsOwner) {
             await deleteObject(storagePath).catch(() => undefined);
@@ -133,11 +145,13 @@ export async function POST(req: NextRequest) {
                 { status: 404 },
             );
         }
+        // Delta real (firmado) del commit: en update es size-oldSize (puede ser
+        // negativo si el archivo encogió), en create es size. Sirve para la cuota
+        // (clampeado a >=0) y para ajustar el cache de uso sin re-escanear.
+        const oldSize = preSnap.empty ? 0 : Number((preSnap.docs[0]!.data() as { size?: number }).size ?? 0);
+        const signedDelta = (size ?? 0) - oldSize;
         if (size && size > 0) {
-            // Para updates, descontar el size del doc existente (no double-count).
-            const oldSize = preSnap.empty ? 0 : Number((preSnap.docs[0]!.data() as { size?: number }).size ?? 0);
-            const delta = Math.max(0, size - oldSize);
-            const quotaResp = await enforceStorageQuota(wsOwner, delta);
+            const quotaResp = await enforceStorageQuota(wsOwner, Math.max(0, signedDelta));
             if (quotaResp) {
                 await deleteObject(storagePath).catch(() => undefined);
                 return quotaResp;
@@ -200,7 +214,7 @@ export async function POST(req: NextRequest) {
         const created = txResult.created;
 
         invalidateAgoraWorkspaceContext(ctx.workspaceId);
-        invalidateStorageUsageCache(wsOwner);
+        adjustStorageUsageCache(wsOwner, signedDelta);
 
         await emitPing({
             scope: 'document',

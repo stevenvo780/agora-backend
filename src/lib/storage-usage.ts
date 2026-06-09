@@ -33,3 +33,15 @@ export const calculateOwnedStorageUsageBytes = async (uid: string): Promise<numb
 export const invalidateStorageUsageCache = (uid: string) => {
   _usageCache.delete(uid);
 };
+
+/**
+ * Ajusta el contador cacheado por el delta real de un commit en vez de
+ * invalidarlo. Invalidar disparaba un full-scan de `documents WHERE ownerId`
+ * en el siguiente commit (amplificador de lecturas Firestore). Manteniendo el
+ * `ts` original, el TTL de 10min sigue corrigiendo cualquier drift con un
+ * re-scan completo, pero entre tanto no se paga el scan por cada archivo.
+ */
+export const adjustStorageUsageCache = (uid: string, deltaBytes: number) => {
+  const cached = _usageCache.get(uid);
+  if (cached) cached.bytes = Math.max(0, cached.bytes + deltaBytes);
+};

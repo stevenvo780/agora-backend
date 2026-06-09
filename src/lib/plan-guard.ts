@@ -27,21 +27,37 @@ interface ActivePlan {
 
 const FREE: ActivePlan = { planId: Plan.Free, status: SubscriptionStatus.Free, endDate: null };
 
-export const getActivePlan = async (uid: string): Promise<ActivePlan> => {
+// getActivePlan se llama en cada commit del daemon vía enforceStorageQuota (path
+// de costo). Sólo ESE path lee del cache (opts.cache=true, TTL 60s); los gates de
+// feature/terminal leen siempre fresco para reflejar un upgrade pagado al instante,
+// así no hace falta invalidar el cache en los flujos de pago.
+const _planCache = new Map<string, { plan: ActivePlan; ts: number }>();
+const PLAN_CACHE_TTL_MS = 60 * 1000;
+
+export const getActivePlan = async (uid: string, opts?: { cache?: boolean }): Promise<ActivePlan> => {
+    if (opts?.cache) {
+        const cached = _planCache.get(uid);
+        if (cached && Date.now() - cached.ts < PLAN_CACHE_TTL_MS) return cached.plan;
+    }
     const ref = adminDb.collection('subscriptions').doc(uid);
     const snap = await ref.get();
-    if (!snap.exists) return FREE;
-    const data = snap.data() as UserSubscription;
-    if (data.status === SubscriptionStatus.Active && data.endDate) {
-        if (new Date(data.endDate) < new Date()) {
-            return { planId: Plan.Free, status: SubscriptionStatus.Expired, endDate: data.endDate };
+    let plan: ActivePlan;
+    if (!snap.exists) {
+        plan = FREE;
+    } else {
+        const data = snap.data() as UserSubscription;
+        if (data.status === SubscriptionStatus.Active && data.endDate && new Date(data.endDate) < new Date()) {
+            plan = { planId: Plan.Free, status: SubscriptionStatus.Expired, endDate: data.endDate };
+        } else {
+            plan = {
+                planId: data.planId ?? Plan.Free,
+                status: data.status ?? SubscriptionStatus.Free,
+                endDate: data.endDate ?? null
+            };
         }
     }
-    return {
-        planId: data.planId ?? Plan.Free,
-        status: data.status ?? SubscriptionStatus.Free,
-        endDate: data.endDate ?? null
-    };
+    _planCache.set(uid, { plan, ts: Date.now() });
+    return plan;
 };
 
 const planRank = (id: PlanId): number => (PLAN_ORDER as readonly PlanId[]).indexOf(id);
@@ -73,7 +89,7 @@ export const requirePlan = async (
  */
 export const enforceStorageQuota = async (uid: string, addBytes: number): Promise<NextResponse | null> => {
     const [plan, usedBytes] = await Promise.all([
-        getActivePlan(uid),
+        getActivePlan(uid, { cache: true }),
         calculateOwnedStorageUsageBytes(uid),
     ]);
     const limitMB = getStorageLimitMB(plan.planId);

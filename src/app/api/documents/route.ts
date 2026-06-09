@@ -308,6 +308,14 @@ export async function GET(req: NextRequest) {
         const rawSearch = searchParams.get('q');
         const searchQuery = rawSearch ? rawSearch.trim().toLowerCase() : '';
 
+        // Lista "plana" (metadata sin búsqueda/cursor/offset/fields custom) = el fetch
+        // del dashboard. Para ese caso soportamos ETag/304: el etag se deriva de los
+        // docs ya leídos (0 reads extra) y un If-None-Match se valida con un check
+        // barato (count + max updatedAt = 2 reads) en vez de re-escanear el workspace.
+        const ifNoneMatch = req.headers.get('if-none-match');
+        const isPlainListReq = view !== 'full' && !searchQuery && !fieldsParam
+            && !searchParams.get('cursor') && !searchParams.get('offset');
+
         let q: FirebaseFirestore.Query = adminDb.collection('documents');
 
         if (workspaceId && !isPersonalWorkspaceId(workspaceId)) {
@@ -318,6 +326,29 @@ export async function GET(req: NextRequest) {
             q = q.where('ownerId', '==', auth.uid);
             if (workspaceId === PERSONAL_WORKSPACE_ID) {
                 q = q.where('workspaceId', '==', PERSONAL_WORKSPACE_ID);
+            }
+        }
+
+        const baseFilteredQ: FirebaseFirestore.Query = q;
+        if (ifNoneMatch && isPlainListReq) {
+            try {
+                const [countSnap, maxSnap] = await Promise.all([
+                    baseFilteredQ.count().get(),
+                    baseFilteredQ.orderBy('updatedAt', 'desc').limit(1).get(),
+                ]);
+                const cnt = countSnap.data().count;
+                const maxMs = maxSnap.empty
+                    ? 0
+                    : ((maxSnap.docs[0]!.get('updatedAt') as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0);
+                const etag = `"docs-${cnt}-${maxMs}"`;
+                if (ifNoneMatch === etag) {
+                    return new NextResponse(null, {
+                        status: 304,
+                        headers: { ETag: etag, 'Cache-Control': 'private, max-age=0, stale-while-revalidate=5' },
+                    });
+                }
+            } catch (e) {
+                console.warn('[documents] etag check failed:', getErrorMessage(e));
             }
         }
 
@@ -365,6 +396,10 @@ export async function GET(req: NextRequest) {
         }
 
         const snapshot = await paginatedQ.limit(limitVal).get();
+        // Orden updatedAt desc → docs[0] tiene el máximo updatedAt (para el ETag).
+        const maxUpdatedMs = snapshot.docs.length > 0
+            ? ((snapshot.docs[0]!.get('updatedAt') as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0)
+            : 0;
         let lastUpdatedMs: number | null = null;
         let docs = snapshot.docs.map(doc => {
             const data = doc.data() as Record<string, unknown>;
@@ -425,6 +460,11 @@ export async function GET(req: NextRequest) {
 
         const headers: Record<string, string> = { 'Cache-Control': cacheControl };
         if (nextCursor) headers['X-Next-Cursor'] = nextCursor;
+        // ETag sólo cuando la lista es completa en una página (sin cursor siguiente):
+        // así count===snapshot.size y matchea el check barato del If-None-Match.
+        if (isPlainListReq && nextCursor === null) {
+            headers['ETag'] = `"docs-${snapshot.size}-${maxUpdatedMs}"`;
+        }
         return NextResponse.json(docs, { headers });
     } catch (error: unknown) {
         console.error('Error listing documents:', getErrorMessage(error));
