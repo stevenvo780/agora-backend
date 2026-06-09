@@ -45,12 +45,15 @@ app.use(cors({
     'X-Hub-Internal-Secret',
     'X-Cron-Secret',
     'X-Signature',
-    'X-Request-Id'
+    'X-Request-Id',
+    'If-None-Match'
   ],
   // Sin esto el browser no puede leer X-Next-Cursor → paginación rota.
+  // ETag: el cliente lo lee para revalidar con If-None-Match (304 → no re-lee docs).
   exposedHeaders: [
     'X-Next-Cursor',
-    'X-Request-Id'
+    'X-Request-Id',
+    'ETag'
   ]
 }));
 
