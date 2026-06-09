@@ -67,19 +67,37 @@ function accumulateUsage(
   acc: AgentUsageStats,
   provider: AIProvider,
   model: string,
-  raw: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; input_tokens?: number; output_tokens?: number }
+  raw: {
+    prompt_tokens?: number; completion_tokens?: number; total_tokens?: number;
+    input_tokens?: number; output_tokens?: number;
+    // DeepSeek (y otros con context caching) reportan cuántos prompt tokens
+    // fueron cache-HIT (re-envíos del prefijo en el loop multi-step, que el API
+    // cobra ~10× menos) vs cache-MISS (contenido nuevo, precio pleno).
+    prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number;
+    cache_read_input_tokens?: number;
+  }
 ) {
   const inTok = raw.prompt_tokens ?? raw.input_tokens ?? 0;
   const outTok = raw.completion_tokens ?? raw.output_tokens ?? 0;
   const total = raw.total_tokens ?? (inTok + outTok);
 
-  acc.promptTokens = (acc.promptTokens ?? 0) + inTok;
+  // Tokens de prompt FACTURABLES: el budget debe reflejar lo que el API
+  // realmente cobra, no los re-envíos cacheados del loop. Si hay info de caché,
+  // hit cuenta a 0.1× (precio de caché DeepSeek). Sin info (otros providers),
+  // todo el prompt es facturable.
+  const cacheHit = raw.prompt_cache_hit_tokens ?? raw.cache_read_input_tokens;
+  const cacheMiss = raw.prompt_cache_miss_tokens;
+  const billableIn = (typeof cacheHit === 'number' || typeof cacheMiss === 'number')
+    ? Math.max(0, (cacheMiss ?? Math.max(0, inTok - (cacheHit ?? 0))) + Math.round((cacheHit ?? 0) * 0.1))
+    : inTok;
+
+  acc.promptTokens = (acc.promptTokens ?? 0) + billableIn;
   acc.completionTokens = (acc.completionTokens ?? 0) + outTok;
   acc.totalTokens = (acc.totalTokens ?? 0) + total;
 
   const cost = lookupCost(model);
   if (cost) {
-    const usd = (inTok * cost.input + outTok * cost.output) / 1_000_000;
+    const usd = (billableIn * cost.input + outTok * cost.output) / 1_000_000;
     acc.estimatedCostUsd = (acc.estimatedCostUsd ?? 0) + usd;
   }
   void provider;
@@ -596,7 +614,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
         message?: { content?: string | null; reasoning_content?: string | null; tool_calls?: OpenAIToolCall[] };
         finish_reason?: string;
       }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number };
     };
 
     if (data.usage) accumulateUsage(usage, options.provider, options.model, data.usage);
