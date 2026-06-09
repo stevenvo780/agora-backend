@@ -128,6 +128,7 @@ export interface UserSubscription {
   userId: string;
   planId: PlanId;
   status: SubscriptionStatusId;
+  cancelAtPeriodEnd?: boolean;
   mpPaymentId?: string;
   mpPreferenceId?: string;
   mpMerchantOrderId?: string;
