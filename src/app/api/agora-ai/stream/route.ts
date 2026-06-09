@@ -238,7 +238,10 @@ export async function POST(request: NextRequest) {
         ? 'budget-exceeded'
         : reason === 'abuse-block' ? 'blocked' : 'rate-limited'
     });
-    return new Response(JSON.stringify({ error: body, reason, retryAfter: retryAfterMs, ...extra }), {
+    // El front lee `retryAfter` como SEGUNDOS (igual que el header Retry-After).
+    // Mandar ms acá hacía que mostrara ~195949 min (×1000). retryAfterMs queda
+    // como campo aparte por si algún consumidor lo necesita en ms.
+    return new Response(JSON.stringify({ error: body, reason, retryAfter: retryAfterSec, retryAfterMs, ...extra }), {
       status: 429,
       headers: {
         'Content-Type': 'application/json',
