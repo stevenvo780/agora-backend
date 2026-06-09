@@ -81,13 +81,16 @@ export async function GET(req: NextRequest) {
     for (const k of await listObjects('workspaces/')) blobKeys.add(k);
     for (const k of await listObjects('users/')) blobKeys.add(k);
 
-    // Todos los docs con blob (paginado).
+    // Todos los docs (paginado). Recolecta file-docs + carpetas vivas (para
+    // detectar folder-docs fantasma que el web muestra como carpetas vacías).
     const docs: DocRow[] = [];
     const hashWithBlob = new Set<string>();
+    const liveFolders = new Map<string, Set<string>>();              // wsId → paths de carpeta con archivos
+    const folderDocs: { id: string; ws: string; path: string; updatedAtMs: number }[] = [];
     let last: string | null = null;
     for (;;) {
       let q = adminDb.collection('documents')
-        .select('storagePath', 'contentHash', 'size', 'type', 'updatedAt', 'workspaceId')
+        .select('storagePath', 'contentHash', 'size', 'type', 'updatedAt', 'workspaceId', 'folder', 'name')
         .orderBy('__name__').limit(2000);
       if (last) q = q.startAfter(last);
       const snap = await q.get();
@@ -95,15 +98,28 @@ export async function GET(req: NextRequest) {
       for (const d of snap.docs) {
         last = d.id;
         const data = d.data() as Record<string, unknown>;
-        if (data.type === 'folder' || typeof data.storagePath !== 'string' || !data.storagePath) continue;
+        const ws = typeof data.workspaceId === 'string' ? data.workspaceId : '(none)';
+        const folder = typeof data.folder === 'string' ? data.folder : '';
+        const name = typeof data.name === 'string' ? data.name : '';
+        if (data.type === 'folder') {
+          const p = folder ? `${folder}/${name}` : name;
+          if (p) folderDocs.push({ id: d.id, ws, path: p, updatedAtMs: toMs(data.updatedAt) });
+          continue;
+        }
+        if (typeof data.storagePath !== 'string' || !data.storagePath) continue;
+        if (folder) {                                                // registrar carpeta + ancestros como vivos
+          const segs = folder.split('/');
+          const set = liveFolders.get(ws) ?? new Set<string>();
+          for (let i = 0; i < segs.length; i++) set.add(segs.slice(0, i + 1).join('/'));
+          liveFolders.set(ws, set);
+        }
         const sp = data.storagePath.replace(/^\//, '');
         const hash = typeof data.contentHash === 'string' ? data.contentHash : null;
         if (blobKeys.has(sp) && hash) hashWithBlob.add(hash);
         docs.push({
           id: d.id, storagePath: sp, contentHash: hash,
           size: typeof data.size === 'number' ? data.size : 0,
-          updatedAtMs: toMs(data.updatedAt),
-          workspaceId: typeof data.workspaceId === 'string' ? data.workspaceId : '(none)',
+          updatedAtMs: toMs(data.updatedAt), workspaceId: ws,
         });
       }
       if (snap.size < 2000) break;
@@ -120,10 +136,23 @@ export async function GET(req: NextRequest) {
       else quarantine.push(d);                               // posible última copia → no tocar
     }
 
-    if (!dryRun && toDelete.length > 0) {
+    // Folder-docs fantasma: carpetas (type=folder) sin NINGÚN archivo debajo. El
+    // web arma el árbol con ellas → muestra carpetas que la terminal ya no tiene
+    // (típico tras un reorg que mueve carpetas). Conservador: solo si no hay un
+    // file-doc en ese path ni debajo, y tras la gracia.
+    const staleFolders: { id: string; ws: string; path: string }[] = [];
+    for (const fd of folderDocs) {
+      if (fd.updatedAtMs > graceCutoff) continue;
+      const live = liveFolders.get(fd.ws);
+      let hasFiles = !!(live && live.has(fd.path));
+      if (!hasFiles && live) { for (const lp of live) { if (lp.startsWith(`${fd.path}/`)) { hasFiles = true; break; } } }
+      if (!hasFiles) staleFolders.push({ id: fd.id, ws: fd.ws, path: fd.path });
+    }
+
+    if (!dryRun && (toDelete.length > 0 || staleFolders.length > 0)) {
       let batch = adminDb.batch(); let n = 0;
-      for (const d of toDelete) {
-        batch.delete(adminDb.collection('documents').doc(d.id));
+      for (const d of [...toDelete.map((x) => x.id), ...staleFolders.map((x) => x.id)]) {
+        batch.delete(adminDb.collection('documents').doc(d));
         if (++n >= 400) { await batch.commit(); batch = adminDb.batch(); n = 0; }
       }
       if (n > 0) await batch.commit();
@@ -135,12 +164,16 @@ export async function GET(req: NextRequest) {
       return m;
     };
 
-    console.warn(`[reconcile-storage] dryRun=${dryRun} docs=${docs.length} blobs=${blobKeys.size} deleted=${dryRun ? 0 : toDelete.length} quarantined=${quarantine.length}`);
+    const staleFoldersByWs: Record<string, number> = {};
+    for (const f of staleFolders) staleFoldersByWs[f.ws] = (staleFoldersByWs[f.ws] ?? 0) + 1;
+
+    console.warn(`[reconcile-storage] dryRun=${dryRun} docs=${docs.length} blobs=${blobKeys.size} deleted=${dryRun ? 0 : toDelete.length} quarantined=${quarantine.length} ghostFolders=${dryRun ? 0 : staleFolders.length}`);
 
     return NextResponse.json({
       dryRun,
       graceMinutes,
-      totals: { docs: docs.length, blobs: blobKeys.size, orphanDocs: toDelete.length + quarantine.length },
+      totals: { docs: docs.length, blobs: blobKeys.size, orphanDocs: toDelete.length + quarantine.length, ghostFolders: staleFolders.length },
+      ghostFolders: { count: dryRun ? 0 : staleFolders.length, candidates: staleFolders.length, byWorkspace: staleFoldersByWs, sample: staleFolders.slice(0, 20).map((f) => `${f.ws}:${f.path}`) },
       deleted: { count: dryRun ? 0 : toDelete.length, candidates: toDelete.length, byWorkspace: byWs(toDelete) },
       quarantined: {
         count: quarantine.length, byWorkspace: byWs(quarantine),
