@@ -20,6 +20,7 @@ app.use(helmet({
 const ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://agora.elenxos.com,https://agora.humanizar.cloud,http://localhost:3000')
   .split(',').map(s => s.trim()).filter(Boolean);
 
+// CORS: expone ETag + permite If-None-Match para revalidación condicional 304.
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ORIGINS.includes(origin)) return cb(null, true);
