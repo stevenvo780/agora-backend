@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NextRequest } from '@/lib/http/next-server';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { verifyLocalDevAuthToken } from '@/lib/local-dev-auth';
@@ -23,11 +24,37 @@ export const getTokenFromRequest = (req: NextRequest) => {
 
 const allowInsecureAuth = process.env.NEXT_PUBLIC_ALLOW_INSECURE_AUTH === 'true';
 const INSECURE_UID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
+const PAT_PREFIX = 'agora_pat_';
+const CLI_TOKENS_COLLECTION = 'cliTokens';
+
+async function verifyPat(token: string): Promise<AuthContext | null> {
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const snap = await adminDb.collection(CLI_TOKENS_COLLECTION).doc(hash).get();
+  if (!snap.exists) return null;
+  const data = snap.data();
+  if (!data || data['revoked'] === true) return null;
+  const uid = typeof data['uid'] === 'string' ? data['uid'] : null;
+  if (!uid) return null;
+
+  // Update lastUsedAt fire-and-forget — don't block the response
+  void adminDb
+    .collection(CLI_TOKENS_COLLECTION)
+    .doc(hash)
+    .update({ lastUsedAt: new Date() })
+    .catch(() => undefined);
+
+  return { uid, email: null };
+}
 
 export const requireAuth = async (req: NextRequest): Promise<AuthContext | null> => {
   const token = getTokenFromRequest(req);
 
   if (!token) return null;
+
+  // PAT fast-path: if the token starts with the PAT prefix, skip Firebase
+  if (token.startsWith(PAT_PREFIX)) {
+    return verifyPat(token);
+  }
 
   try {
     const decoded = await adminAuth.verifyIdToken(token);
