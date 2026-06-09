@@ -5,6 +5,7 @@ import {
   HeadObjectCommand,
   DeleteObjectCommand,
   CopyObjectCommand,
+  ListObjectsV2Command,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -75,6 +76,23 @@ export const getNasClient = (): S3Client => {
     });
   }
   return _client;
+};
+
+/**
+ * Lista todas las keys bajo un prefijo (paginado). Usado por el reconciliador
+ * doc↔blob para detectar huérfanos sin un HEAD por documento.
+ */
+export const listObjects = async (prefix: string): Promise<Set<string>> => {
+  const keys = new Set<string>();
+  let token: string | undefined;
+  do {
+    const r = await getNasClient().send(new ListObjectsV2Command({
+      Bucket: bucket, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000
+    }));
+    for (const o of r.Contents ?? []) { if (o.Key) keys.add(o.Key); }
+    token = r.IsTruncated ? r.NextContinuationToken : undefined;
+  } while (token);
+  return keys;
 };
 
 export const objectExists = async (key: string): Promise<boolean> => {
