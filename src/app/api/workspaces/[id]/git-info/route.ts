@@ -30,6 +30,20 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
         const { id: workspaceId } = await context.params;
 
+        // El commit por UI va DIRECTO del navegador al host de cloneUrl. Si en
+        // Firestore quedó un host viejo/caído (p.ej. el proxy
+        // git.proxy.humanizar-dev.cloud previo a la migración), el commit cuelga.
+        // Forzamos el host público canónico de Forgejo (FORGEJO_API_URL) en toda
+        // URL devuelta, sin importar lo que haya guardado.
+        const publicBase = (getForgejoApiUrl() ?? '').replace(/\/$/, '');
+        const publicHost = publicBase ? new URL(publicBase).host : null;
+        const canonicalHost = (u: string | null | undefined): string | null => {
+            if (!u || !publicHost) return u ?? null;
+            return u
+                .replace(/^(https?:\/\/)[^/]+/i, `$1${publicHost}`)
+                .replace(/^(ssh:\/\/[^@/]+@)[^/:]+/i, `$1${publicHost}`);
+        };
+
         let ownerUid = auth.uid;
         if (isPersonalWorkspaceId(workspaceId)) {
             ownerUid = auth.uid;
@@ -44,9 +58,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     provisioned: true,
                     workspaceId,
                     repoFullName: repo.full_name,
-                    cloneUrl: repo.clone_url ?? null,
-                    sshUrl: repo.ssh_url ?? null,
-                    htmlUrl: repo.html_url ?? null
+                    cloneUrl: canonicalHost(repo.clone_url),
+                    sshUrl: canonicalHost(repo.ssh_url),
+                    htmlUrl: canonicalHost(repo.html_url)
                 });
             }
         } else {
@@ -63,9 +77,9 @@ export async function GET(req: NextRequest, context: RouteContext) {
                     provisioned: true,
                     workspaceId,
                     repoFullName: wsData.git.forgejoRepo ?? null,
-                    cloneUrl: wsData.git.cloneUrl ?? null,
-                    sshUrl: wsData.git.sshUrl ?? null,
-                    htmlUrl: wsData.git.htmlUrl ?? null
+                    cloneUrl: canonicalHost(wsData.git.cloneUrl),
+                    sshUrl: canonicalHost(wsData.git.sshUrl),
+                    htmlUrl: canonicalHost(wsData.git.htmlUrl)
                 });
             }
         }
@@ -75,7 +89,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
         const o = getForgejoOrg();
         const repoName = repoNameForWorkspace(workspaceId, ownerUid);
         const fullName = `${o}/${repoName}`;
-        const baseHttp = apiUrl ? apiUrl.replace(/\/$/, '') : 'https://git.proxy.humanizar-dev.cloud';
+        const baseHttp = (apiUrl ?? publicBase).replace(/\/$/, '');
         const cloneUrl = `${baseHttp}/${fullName}.git`;
         const htmlUrl = `${baseHttp}/${fullName}`;
 
