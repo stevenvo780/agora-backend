@@ -49,7 +49,8 @@ const DEFAULT_MODELS: Record<Exclude<AIProvider, 'ollama'>, string> = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',
   gemini: 'gemini-2.0-flash',
-  deepseek: 'deepseek-v4-flash'
+  deepseek: 'deepseek-v4-flash',
+  minimax: 'MiniMax-M3'
 };
 
 function encodeEvent(encoder: TextEncoder, payload: AgentStreamEvent) {

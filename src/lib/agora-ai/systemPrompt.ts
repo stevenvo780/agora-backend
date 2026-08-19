@@ -382,12 +382,19 @@ export function extractThinkingSegments(content: string): { thinking: string | n
     return { thinking: null, visible: '' };
   }
 
-  const match = content.match(/<thinking>([\s\S]*?)<\/thinking>/i);
-  if (!match) {
+  // Agora historically prompted <thinking>, while MiniMax-M3 emits the
+  // shorter native <think> tag when reasoning_split=false. Accept both and
+  // strip every reasoning block from the user-visible answer while keeping
+  // the full raw assistant turn available for multi-turn continuations.
+  const blocks = Array.from(content.matchAll(/<(thinking|think)>([\s\S]*?)<\/\1>/gi));
+  if (!blocks.length) {
     return { thinking: null, visible: content.trim() };
   }
 
-  const thinking = match[1]?.trim() || null;
-  const visible = content.replace(match[0], '').trim();
+  const thinking = blocks
+    .map((match) => match[2]?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join('\n\n') || null;
+  const visible = content.replace(/<(thinking|think)>[\s\S]*?<\/\1>/gi, '').trim();
   return { thinking, visible };
 }

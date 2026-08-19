@@ -21,6 +21,7 @@ export function createSummaryClient(options: SummaryClientOptions): SummaryProvi
         switch (options.provider) {
           case 'openai':
           case 'deepseek':
+          case 'minimax':
             return await summarizeOpenAICompat({ ...options, systemPrompt, messages, maxTokens, signal: controller.signal });
           case 'anthropic':
             return await summarizeAnthropic({ ...options, systemPrompt, messages, maxTokens, signal: controller.signal });
@@ -49,7 +50,9 @@ interface InternalArgs extends SummaryClientOptions {
 async function summarizeOpenAICompat(args: InternalArgs): Promise<string> {
   const endpoint = args.provider === 'deepseek'
     ? 'https://api.deepseek.com/chat/completions'
-    : 'https://api.openai.com/v1/chat/completions';
+    : args.provider === 'minimax'
+      ? 'https://api.minimax.io/v1/chat/completions'
+      : 'https://api.openai.com/v1/chat/completions';
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${args.apiKey}` },
@@ -57,6 +60,7 @@ async function summarizeOpenAICompat(args: InternalArgs): Promise<string> {
     body: JSON.stringify({
       model: args.model,
       max_tokens: args.maxTokens,
+      ...(args.provider === 'minimax' ? { thinking: { type: 'disabled' } } : {}),
       messages: [
         { role: 'system', content: args.systemPrompt },
         ...args.messages.map((m) => ({

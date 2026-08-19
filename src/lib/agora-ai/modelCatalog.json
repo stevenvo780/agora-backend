@@ -1,7 +1,7 @@
 {
   "$schema": "./modelCatalog.schema.json",
-  "lastUpdated": "2026-05-04",
-  "_help": "Fuente de verdad de modelos disponibles y sus ventanas de contexto. Editar a mano cuando salgan modelos nuevos. Anthropic y Gemini pueden exponer parte de estos datos vía API; OpenAI, DeepSeek y xAI deben validarse contra docs oficiales o test call.",
+  "lastUpdated": "2026-08-19",
+  "_help": "Fuente de verdad de modelos disponibles y sus ventanas de contexto. Editar a mano cuando salgan modelos nuevos. Anthropic y Gemini pueden exponer parte de estos datos vía API; OpenAI, DeepSeek, MiniMax y xAI deben validarse contra docs oficiales o test call.",
   "_verifiedLegend": {
     "official": "leído de docs oficiales del provider en lastUpdated",
     "community": "citado por fuentes terceras confiables, no validado contra API",
@@ -44,6 +44,16 @@
       "maxOutputTokens": 384000,
       "verified": "deprecated",
       "notes": "Alias temporal de compatibilidad: actualmente enruta a deepseek-v4-flash thinking. Se retirará el 2026-07-24 15:59 UTC."
+    },
+
+    {
+      "id": "MiniMax-M3",
+      "family": "minimax",
+      "label": "MiniMax M3",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "verified": "official",
+      "notes": "Modelo agentic multimodal actual de MiniMax. API compatible con OpenAI, tool use, contexto de hasta 1M y razonamiento CoT de hasta 128K."
     },
 
     {

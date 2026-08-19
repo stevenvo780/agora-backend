@@ -220,7 +220,7 @@ type OpenAICompatibleProviderConfig = {
   supportsToolChoice: boolean;
 };
 
-const OPENAI_COMPATIBLE_PROVIDERS: Record<'openai' | 'deepseek', OpenAICompatibleProviderConfig> = {
+const OPENAI_COMPATIBLE_PROVIDERS: Record<'openai' | 'deepseek' | 'minimax', OpenAICompatibleProviderConfig> = {
   openai: {
     endpoint: 'https://api.openai.com/v1/chat/completions',
     label: 'OpenAI',
@@ -231,6 +231,12 @@ const OPENAI_COMPATIBLE_PROVIDERS: Record<'openai' | 'deepseek', OpenAICompatibl
     endpoint: 'https://api.deepseek.com/chat/completions',
     label: 'DeepSeek',
     echoReasoningContent: true,
+    supportsToolChoice: false
+  },
+  minimax: {
+    endpoint: 'https://api.minimax.io/v1/chat/completions',
+    label: 'MiniMax',
+    echoReasoningContent: false,
     supportsToolChoice: false
   }
 };
@@ -540,7 +546,9 @@ async function compactInputMessages(
 async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
   const providerConfig = options.provider === 'deepseek'
     ? OPENAI_COMPATIBLE_PROVIDERS.deepseek
-    : OPENAI_COMPATIBLE_PROVIDERS.openai;
+    : options.provider === 'minimax'
+      ? OPENAI_COMPATIBLE_PROVIDERS.minimax
+      : OPENAI_COMPATIBLE_PROVIDERS.openai;
   const steps: AgentTraceStep[] = [];
   const rollback: AgentRollbackAction[] = [];
   const { emitStatus, emitStep, emitContextTruncated } = createEmitters(steps, options.callbacks);
@@ -596,6 +604,7 @@ async function runOpenAI(options: ProviderRunOptions): Promise<AgentRun> {
         model: options.model,
         messages,
         max_tokens: 8192,
+        ...(options.provider === 'minimax' ? { reasoning_split: false } : {}),
         ...(availableTools.length > 0
           ? {
             tools: availableTools,
@@ -1218,6 +1227,7 @@ export async function runProviderConversation(options: ProviderRunOptions): Prom
   switch (options.provider) {
     case 'openai': return runOpenAI(options);
     case 'deepseek': return runOpenAI(options);
+    case 'minimax': return runOpenAI(options);
     case 'anthropic': return runAnthropic(options);
     case 'gemini': return runGemini(options);
     default:
