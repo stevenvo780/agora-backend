@@ -41,7 +41,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 
 // Identificadores canónicos de proveedor para el budget. `gemini` se
 // normaliza a `google` para alinear con la nomenclatura de billing.
-export const BUDGET_PROVIDER_KEYS = ['deepseek', 'openai', 'anthropic', 'google', 'custom'] as const;
+export const BUDGET_PROVIDER_KEYS = ['deepseek', 'openai', 'anthropic', 'google', 'minimax', 'custom'] as const;
 export type BudgetProviderKey = typeof BUDGET_PROVIDER_KEYS[number];
 
 const PROVIDER_ALIASES: Record<string, BudgetProviderKey> = {
@@ -50,6 +50,7 @@ const PROVIDER_ALIASES: Record<string, BudgetProviderKey> = {
   anthropic: 'anthropic',
   google: 'google',
   gemini: 'google',
+  minimax: 'minimax',
   custom: 'custom',
   'agora-gateway': 'custom'
 };
@@ -74,6 +75,7 @@ const DEFAULT_BUDGETS: Record<BudgetProviderKey, number> = {
   openai: 500_000,   // era 200_000
   anthropic: 500_000, // era 200_000
   google: 500_000,
+  minimax: 1_000_000,
   custom: 300_000    // era 100_000
 };
 const DEFAULT_FALLBACK_BUDGET = 1_000_000;
@@ -91,6 +93,7 @@ const ENV_VARS_BY_PROVIDER: Record<BudgetProviderKey, string> = {
   openai: 'AGORA_AI_BUDGET_OPENAI',
   anthropic: 'AGORA_AI_BUDGET_ANTHROPIC',
   google: 'AGORA_AI_BUDGET_GOOGLE',
+  minimax: 'AGORA_AI_BUDGET_MINIMAX',
   custom: 'AGORA_AI_BUDGET_CUSTOM'
 };
 

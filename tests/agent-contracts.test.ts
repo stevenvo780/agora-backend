@@ -56,7 +56,7 @@ test('parseAgentKeySavePayload exige provider y key', () => {
 });
 
 test('AGENT_PROVIDER_VALUES incluye los proveedores esperados', () => {
-  for (const p of ['openai', 'anthropic', 'deepseek', 'gemini', 'agora-gateway', 'custom']) {
+  for (const p of ['openai', 'anthropic', 'deepseek', 'gemini', 'minimax', 'agora-gateway', 'custom']) {
     assert.equal((AGENT_PROVIDER_VALUES as readonly string[]).includes(p), true, p);
   }
 });

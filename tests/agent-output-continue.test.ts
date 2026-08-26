@@ -181,6 +181,36 @@ test('OpenAI: cap=0 (deshabilitado) → muestra "Simplifica" en el primer corte'
   }
 });
 
+test('MiniMax: usa el endpoint oficial y preserva el thinking nativo al continuar', async () => {
+  const mock = installFetchMock([
+    openAIChunk('<think>razonamiento privado</think>Primera parte', 'length'),
+    openAIChunk('-y-cierre.', 'stop')
+  ]);
+  try {
+    const run = await runProviderConversation({
+      provider: 'minimax',
+      apiKey: 'k',
+      model: 'MiniMax-M3',
+      messages: userMsg('Resuelve una tarea larga'),
+      mode: 'chat',
+      executionContext: baseContext(),
+      maxOutputContinues: 2
+    });
+    assert.equal(mock.calls.length, 2);
+    assert.equal(mock.calls[0]!.url, 'https://api.minimax.io/v1/chat/completions');
+    assert.equal(mock.calls[0]!.body.reasoning_split, false);
+    const secondMessages = mock.calls[1]!.body.messages as Array<{ role: string; content: string }>;
+    assert.ok(
+      secondMessages.some((message) => message.role === 'assistant' && message.content.includes('<think>razonamiento privado</think>')),
+      'MiniMax exige reenviar la respuesta completa para conservar su cadena de razonamiento'
+    );
+    assert.equal(run.finalReply, 'Primera parte-y-cierre.');
+    assert.ok(!run.finalReply.includes('<think>'));
+  } finally {
+    mock.restore();
+  }
+});
+
 test('Anthropic: trunca por max_tokens → continúa y concatena', async () => {
   const chunk = (text: string, stop: 'max_tokens' | 'end_turn') => ({
     status: 200,

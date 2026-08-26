@@ -2,7 +2,7 @@
  * POST /api/agora-ai
  *
  * Multi-provider AI chat/agent proxy with Firebase workspace context injection.
- * Supports: OpenAI (ChatGPT), Anthropic (Claude), Google Gemini, DeepSeek.
+ * Supports: OpenAI (ChatGPT), Anthropic (Claude), Google Gemini, DeepSeek y MiniMax.
  * Ollama keeps a direct browser flow because it is commonly deployed locally.
  *
  * API keys: el cliente puede mandar `apiKey` o `X-Agent-Key` (compat con
@@ -80,7 +80,8 @@ export async function POST(request: NextRequest) {
       openai: 'gpt-4o-mini',
       anthropic: 'claude-haiku-4-5-20251001',
       gemini: 'gemini-2.0-flash',
-      deepseek: 'deepseek-v4-flash'
+      deepseek: 'deepseek-v4-flash',
+      minimax: 'MiniMax-M3'
     };
 
     if (!apiKey && (AGENT_PROVIDER_VALUES as readonly string[]).includes(provider)) {

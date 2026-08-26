@@ -14,7 +14,7 @@ import { adminDb } from '@/lib/firebase-admin';
 import { FieldValue, type Timestamp } from 'firebase-admin/firestore';
 import { ok, err, parseZod, type ParseResult } from '@agora/contracts';
 
-const PROVIDER_VALUES = ['openai', 'anthropic', 'gemini', 'google', 'deepseek', 'ollama', 'agora-gateway', 'custom'] as const;
+const PROVIDER_VALUES = ['openai', 'anthropic', 'gemini', 'google', 'deepseek', 'minimax', 'ollama', 'agora-gateway', 'custom'] as const;
 
 export const chatCreateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),

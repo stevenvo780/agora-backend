@@ -1,7 +1,7 @@
 import type { AgentUiCommandType, AgentUiPanel } from '@/lib/agora-ai/uiPanels';
 export type { AgentUiCommandType, AgentUiPanel } from '@/lib/agora-ai/uiPanels';
 
-export type AIProvider = 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'deepseek';
+export type AIProvider = 'openai' | 'anthropic' | 'ollama' | 'gemini' | 'deepseek' | 'minimax';
 export type AgentMode = 'chat' | 'agent';
 
 export type AgentAccessProfileId = 'read_only' | 'editor' | 'workspace' | 'developer' | 'custom';

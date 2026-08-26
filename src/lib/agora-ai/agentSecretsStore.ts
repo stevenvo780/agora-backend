@@ -17,7 +17,7 @@ import {
   CURRENT_KID
 } from '@/lib/agora-ai/agentVault';
 
-export const AGENT_PROVIDER_VALUES = ['openai', 'deepseek', 'anthropic', 'google', 'gemini', 'agora-gateway', 'custom'] as const;
+export const AGENT_PROVIDER_VALUES = ['openai', 'deepseek', 'anthropic', 'google', 'gemini', 'minimax', 'agora-gateway', 'custom'] as const;
 export type AgentSecretProvider = typeof AGENT_PROVIDER_VALUES[number];
 
 export const agentKeySaveSchema = z.object({

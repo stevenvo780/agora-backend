@@ -14,6 +14,7 @@ process.env.AGORA_AI_BUDGET_DEEPSEEK = '2000';
 process.env.AGORA_AI_BUDGET_OPENAI = '500';
 process.env.AGORA_AI_BUDGET_ANTHROPIC = '500';
 process.env.AGORA_AI_BUDGET_GOOGLE = '800';
+process.env.AGORA_AI_BUDGET_MINIMAX = '1200';
 process.env.AGORA_AI_BUDGET_CUSTOM = '300';
 process.env.AGORA_AI_DAILY_TOKEN_BUDGET = '1000'; // fallback global
 process.env.AGORA_AI_HOURLY_MESSAGE_CAP = '5';
@@ -128,6 +129,7 @@ test('normalizeProvider: mapea aliases conocidos', () => {
   assert.equal(normalizeProvider('anthropic'), 'anthropic');
   assert.equal(normalizeProvider('google'), 'google');
   assert.equal(normalizeProvider('gemini'), 'google');
+  assert.equal(normalizeProvider('MiniMax'), 'minimax');
   assert.equal(normalizeProvider('agora-gateway'), 'custom');
   assert.equal(normalizeProvider('custom'), 'custom');
 });
@@ -144,6 +146,7 @@ test('resolveBudgetFor: aplica env del proveedor', () => {
   assert.deepEqual(resolveBudgetFor('deepseek'), { budget: 2000, providerKey: 'deepseek' });
   assert.deepEqual(resolveBudgetFor('openai'), { budget: 500, providerKey: 'openai' });
   assert.deepEqual(resolveBudgetFor('gemini'), { budget: 800, providerKey: 'google' });
+  assert.deepEqual(resolveBudgetFor('minimax'), { budget: 1200, providerKey: 'minimax' });
   assert.deepEqual(resolveBudgetFor('custom'), { budget: 300, providerKey: 'custom' });
 });
 
@@ -451,6 +454,7 @@ test('config: constantes exportadas con defaults sensatos', () => {
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.openai, 500_000);   // ampliado de 200K
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.anthropic, 500_000); // ampliado de 200K
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.google, 500_000);
+  assert.equal(__constantsForTest.DEFAULT_BUDGETS.minimax, 1_000_000);
   assert.equal(__constantsForTest.DEFAULT_BUDGETS.custom, 300_000);   // ampliado de 100K
   assert.equal(__constantsForTest.DEFAULT_FALLBACK_BUDGET, 1_000_000);
   assert.equal(__constantsForTest.DEFAULT_HOURLY_MESSAGE_CAP, 100);

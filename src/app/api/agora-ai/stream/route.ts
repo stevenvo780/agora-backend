@@ -49,7 +49,8 @@ const DEFAULT_MODELS: Record<Exclude<AIProvider, 'ollama'>, string> = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',
   gemini: 'gemini-2.0-flash',
-  deepseek: 'deepseek-v4-flash'
+  deepseek: 'deepseek-v4-flash',
+  minimax: 'MiniMax-M3'
 };
 
 function encodeEvent(encoder: TextEncoder, payload: AgentStreamEvent) {
@@ -238,7 +239,10 @@ export async function POST(request: NextRequest) {
         ? 'budget-exceeded'
         : reason === 'abuse-block' ? 'blocked' : 'rate-limited'
     });
-    return new Response(JSON.stringify({ error: body, reason, retryAfter: retryAfterMs, ...extra }), {
+    // El front lee `retryAfter` como SEGUNDOS (igual que el header Retry-After).
+    // Mandar ms acá hacía que mostrara ~195949 min (×1000). retryAfterMs queda
+    // como campo aparte por si algún consumidor lo necesita en ms.
+    return new Response(JSON.stringify({ error: body, reason, retryAfter: retryAfterSec, retryAfterMs, ...extra }), {
       status: 429,
       headers: {
         'Content-Type': 'application/json',

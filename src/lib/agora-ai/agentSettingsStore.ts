@@ -17,13 +17,15 @@ import { z } from 'zod';
 import { adminDb } from '@/lib/firebase-admin';
 import { parseZod, type ParseResult } from '@agora/contracts';
 import type { AIProvider } from '@/lib/agora-ai/types';
+import { getCatalogModel, type ModelFamily } from '@/lib/agora-ai/modelCatalog';
 
 /** Defaults flash/baratos por provider para el auxModel de clasificación. */
 export const DEFAULT_FLASH_MODELS: Record<Exclude<AIProvider, 'ollama'>, string> = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',
   gemini: 'gemini-2.0-flash',
-  deepseek: 'deepseek-v4-flash'
+  deepseek: 'deepseek-v4-flash',
+  minimax: 'MiniMax-M3'
 };
 
 export const agentSettingsSchema = z.object({
@@ -47,6 +49,21 @@ export const parseAgentSettings = (input: unknown): ParseResult<AgentSettings> =
 
 const DEFAULTS: Required<Pick<AgentSettings, 'autonomousMode'>> = {
   autonomousMode: false
+};
+
+const PROVIDER_FAMILIES: Record<Exclude<AIProvider, 'ollama'>, ModelFamily> = {
+  openai: 'openai',
+  anthropic: 'anthropic',
+  gemini: 'google',
+  deepseek: 'deepseek',
+  minimax: 'minimax'
+};
+
+const isCompatibleModel = (provider: Exclude<AIProvider, 'ollama'>, modelId: string): boolean => {
+  const catalogModel = getCatalogModel(modelId);
+  // Conservamos ids custom que el catálogo no conoce. Sólo rechazamos una
+  // incompatibilidad cuando podemos probar que pertenece a otra familia.
+  return !catalogModel || catalogModel.family === PROVIDER_FAMILIES[provider];
 };
 
 interface CacheEntry {
@@ -99,8 +116,14 @@ export function resolveAgentSettings(
   provider: Exclude<AIProvider, 'ollama'>,
   requestModel: string
 ): ResolvedAgentSettings {
-  const mainModel = settings?.mainModel?.trim() || requestModel;
-  const auxModel = settings?.auxModel?.trim() || DEFAULT_FLASH_MODELS[provider];
+  const storedMainModel = settings?.mainModel?.trim() || '';
+  const storedAuxModel = settings?.auxModel?.trim() || '';
+  const mainModel = storedMainModel && isCompatibleModel(provider, storedMainModel)
+    ? storedMainModel
+    : requestModel;
+  const auxModel = storedAuxModel && isCompatibleModel(provider, storedAuxModel)
+    ? storedAuxModel
+    : DEFAULT_FLASH_MODELS[provider];
   const autonomousMode = settings?.autonomousMode ?? DEFAULTS.autonomousMode;
   return { mainModel, auxModel, autonomousMode };
 }

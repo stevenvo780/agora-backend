@@ -1,6 +1,6 @@
 import catalogJson from '@/lib/agora-ai/modelCatalog.json' with { type: 'json' };
 
-export type ModelFamily = 'deepseek' | 'anthropic' | 'openai' | 'google' | 'xai' | 'ollama';
+export type ModelFamily = 'deepseek' | 'anthropic' | 'openai' | 'google' | 'minimax' | 'xai' | 'ollama';
 export type ModelVerified = 'official' | 'community' | 'unverified';
 
 export interface CatalogModel {
@@ -54,6 +54,7 @@ export function getContextWindow(family: ModelFamily | string, modelId: string):
     case 'openai': return 128_000;
     case 'deepseek': return 128_000;
     case 'google': return 1_048_576;
+    case 'minimax': return 1_000_000;
     case 'xai': return 131_072;
     case 'ollama': return 32_768;
     default: return 32_768;
@@ -68,6 +69,7 @@ export function getMaxOutputTokens(family: ModelFamily | string, modelId: string
     case 'openai': return 16_384;
     case 'deepseek': return 8_192;
     case 'google': return 8_192;
+    case 'minimax': return 128_000;
     case 'xai': return 16_000;
     default: return 4_096;
   }
